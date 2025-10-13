@@ -1,0 +1,45 @@
+{
+  "seed": null,
+  "device": "cuda",
+  "data": {
+    "lr_root": "./data/TFM/lr",
+    "hr_root": "./data/TFM/hr",
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 512,
+    "channels": 1
+  },
+  "model": {
+    "module": "network",
+    "backbone": "unet_res",
+    "diffusion_steps": 1000,
+    "checkpoint_dir": "SR/weight_ckpt",
+    "checkpoint_name": "model_SR_512.pth"
+  },
+  "optimization": {
+    "epochs": 1000,
+    "ema_decay": 0.99,
+    "learning_rate": 0.0001,
+    "betas": [0.9, 0.99],
+    "weight_decay": 0.01,
+    "warmup_epochs": 100,
+    "lr_min": 1e-6,
+    "lr_max": 0.001,
+    "amp": true
+  },
+  "logging": {
+    "tensorboard_root": "runs",
+    "experiment_name": "sr-train",
+    "sample_interval": 20,
+    "num_preview_samples": 4,
+    "preview_seed": 1234,
+    "print_model_summary": false,
+    "record_psnr": true,
+    "save_preview_images": false,
+    "preview_dir": "SR/previews"
+  },
+  "sampler": {
+    "type": "ddpm",
+    "simple_var": true
+  }
+}

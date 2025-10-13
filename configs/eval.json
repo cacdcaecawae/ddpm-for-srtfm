@@ -1,0 +1,33 @@
+{
+  "device": "cuda",
+  "data": {
+    "lr_root": "./data/TFM/eval/lr",
+    "hr_root": "./data/TFM/eval/hr",
+    "batch_size": 1,
+    "num_workers": 4,
+    "image_size": 512,
+    "channels": 1
+  },
+  "model": {
+    "module": "network",
+    "backbone": "unet_res",
+    "diffusion_steps": 1000,
+    "checkpoint_path": "./SR/auotodl_weight/model_SR_0915.pth"
+  },
+  "vae": {
+    "enabled": true,
+    "checkpoint_path": "./SR/auotodl_weight/vae_best-1.pt",
+    "encoder_key": "enc",
+    "decoder_key": "dec"
+  },
+  "sampler": {
+    "type": "ddim",
+    "ddim_steps": 20,
+    "eta": 1.0,
+    "simple_var": false
+  },
+  "output": {
+    "root": "SR/vae/step20_eta1_0915",
+    "save_images": true
+  }
+}
