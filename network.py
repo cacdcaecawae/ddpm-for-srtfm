@@ -1,7 +1,8 @@
+from __future__ import annotations
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from dataset import get_img_shape
 
 
@@ -15,9 +16,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_seq_len, d_model)
         positions = torch.linspace(0, max_seq_len - 1, max_seq_len)
         dims = torch.linspace(0, d_model - 2, d_model // 2)
-        pos, two_i = torch.meshgrid(positions,
-                                    dims,
-                                    indexing='ij')  # shape (max_seq_len, d_model/2)
+        pos, two_i = torch.meshgrid(positions, dims)
         denominator = 10000**(two_i / d_model)
         pe_2i = torch.sin(pos / denominator)
         pe_2i_1 = torch.cos(pos / denominator)
@@ -103,12 +102,12 @@ class SeqT(nn.Module):
 
     def __init__(self, *modules: nn.Module) -> None:
         super().__init__()
-        self.modules_with_time = nn.ModuleList(modules)
+        self.mods = nn.ModuleList(modules)
 
     def forward(self,
                 x: torch.Tensor,
-                t_emb: torch.Tensor | None = None) -> torch.Tensor:
-        for module in self.modules_with_time:
+                t_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+        for module in self.mods:
             x = module(x, t_emb)
         return x
 
@@ -119,10 +118,10 @@ class UnetBlock(nn.Module):
                  shape: tuple[int, int, int],
                  in_c: int,
                  out_c: int,
-                 t_dim: int | None = None,
+                 t_dim: Optional[int] = None,
                  residual: bool = False) -> None:
         super().__init__()
-        self.layer_norm = nn.LayerNorm(shape)
+        self.ln = nn.LayerNorm(shape)
         self.conv1 = nn.Conv2d(in_c, out_c, 3, 1, 1)
         self.conv2 = nn.Conv2d(out_c, out_c, 3, 1, 1)
         self.activation = nn.ReLU()
@@ -145,16 +144,18 @@ class UnetBlock(nn.Module):
 
     def forward(self,
                 x: torch.Tensor,
-                t_emb: torch.Tensor | None = None) -> torch.Tensor:
-        out = self.layer_norm(x)
+                t_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out = self.ln(x)
         out = self.conv1(out)
+        out = self.activation(out)
+        if t_emb is not None:
+            t_emb = t_emb.squeeze(1)
         if self.t_fc1 is not None and t_emb is not None:
             out = out + self.t_fc1(F.silu(t_emb)).unsqueeze(-1).unsqueeze(-1)
-        out = self.activation(out)
         out = self.conv2(out)
         if self.t_fc2 is not None and t_emb is not None:
             out = out + self.t_fc2(F.silu(t_emb)).unsqueeze(-1).unsqueeze(-1)
-        if self.residual and self.residual_conv is not None:
+        if self.residual:
             out = out + self.residual_conv(x)
         out = self.activation(out)
         return out
@@ -173,9 +174,10 @@ class UNet(nn.Module):
         c, h, w = get_img_shape()
 
         self.pe = PositionalEncoding(n_steps, pe_dim)
-        self.t_mlp = nn.Sequential(nn.Linear(pe_dim, pe_dim * 4), nn.SiLU(),
-                                   nn.Linear(pe_dim * 4, pe_dim * 4))
-        self.t_dim = pe_dim * 4
+        self.t_mlp = nn.Sequential(
+            nn.Linear(pe_dim, pe_dim * 4), nn.SiLU(),
+            nn.Linear(pe_dim * 4, pe_dim * 4))
+        self.t_dim = pe_dim
 
         num_layers = len(channels)
         hs = [h]
@@ -247,7 +249,7 @@ class UNet(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor,
                 lr_image: torch.Tensor) -> torch.Tensor:
         x = torch.cat((x, lr_image), dim=1)
-        t_emb = self.t_mlp(self.pe(t))
+        t_emb = self.pe(t)
         encoder_outs = []
         for encoder, down in zip(self.encoders, self.downs):
             x = encoder(x, t_emb)
@@ -259,9 +261,9 @@ class UNet(nn.Module):
             x = up(x)
             pad_x = encoder_out.shape[2] - x.shape[2]
             pad_y = encoder_out.shape[3] - x.shape[3]
-            if pad_x or pad_y:
-                x = F.pad(x, (pad_x // 2, pad_x - pad_x // 2, pad_y // 2,
-                              pad_y - pad_y // 2))
+            x = F.pad(x,
+                      (pad_x // 2, pad_x - pad_x // 2, pad_y // 2,
+                       pad_y - pad_y // 2))
             x = torch.cat((encoder_out, x), dim=1)
             x = decoder(x, t_emb)
         return self.conv_out(x)

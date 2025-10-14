@@ -2,11 +2,11 @@
   "seed": null,
   "device": "cuda",
   "data": {
-    "lr_root": "./data/TFM/lr",
-    "hr_root": "./data/TFM/hr",
-    "batch_size": 32,
+    "lr_root": "./data/train/TFM",
+    "hr_root": "./data/train/hr",
+    "batch_size": 2,
     "num_workers": 4,
-    "image_size": 512,
+    "image_size": 400,
     "channels": 1
   },
   "model": {
@@ -30,7 +30,7 @@
   "logging": {
     "tensorboard_root": "runs",
     "experiment_name": "sr-train",
-    "sample_interval": 20,
+    "sample_interval": 10,
     "num_preview_samples": 4,
     "preview_seed": 1234,
     "print_model_summary": false,

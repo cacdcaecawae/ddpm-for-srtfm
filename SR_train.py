@@ -6,7 +6,7 @@ import random
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -45,7 +45,7 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def set_seed(seed: int | None) -> None:
+def set_seed(seed: Optional[int]) -> None:
     if seed is None:
         return
     random.seed(seed)
@@ -55,7 +55,7 @@ def set_seed(seed: int | None) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def resolve_device(preferred: str | None) -> torch.device:
+def resolve_device(preferred: Optional[str]) -> torch.device:
     if preferred is None:
         preferred = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(preferred)
@@ -92,8 +92,8 @@ def warmup_cosine(optimizer: torch.optim.Optimizer,
 
 
 def to_jet(x: torch.Tensor,
-           vmin: float | None = None,
-           vmax: float | None = None,
+           vmin: Optional[float] = None,
+           vmax: Optional[float] = None,
            bins: int = 256) -> torch.Tensor:
     """Map a batch of 1-channel tensors to RGB using a jet colormap."""
     squeeze_back = False
@@ -271,7 +271,7 @@ def train(ddpm: DDPM,
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         mean_psnr = None
-        if (epoch + 1) % preview_interval == 0:
+        if (epoch + 0) % preview_interval == 0:
             net_was_training = net.training
             net.eval()
             ema_net.eval()

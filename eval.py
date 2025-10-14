@@ -2,7 +2,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -39,7 +39,7 @@ def load_config(path: Path) -> Dict[str, Any]:
         return json.load(handle)
 
 
-def resolve_device(preferred: str | None) -> torch.device:
+def resolve_device(preferred: Optional[str]) -> torch.device:
     if preferred is None:
         preferred = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(preferred)
@@ -85,8 +85,9 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
     return model
 
 
-def build_vae(cfg: Dict[str, Any],
-              device: torch.device) -> tuple[VAE_Encoder | None, VAE_Decoder | None]:
+def build_vae(
+        cfg: Dict[str, Any],
+        device: torch.device) -> Tuple[Optional[VAE_Encoder], Optional[VAE_Decoder]]:
     vae_cfg = cfg.get("vae")
     if not vae_cfg or not vae_cfg.get("enabled", True):
         return None, None
@@ -102,8 +103,9 @@ def build_vae(cfg: Dict[str, Any],
     return encoder, decoder
 
 
-def prepare_sampler(cfg: Dict[str, Any],
-                    device: torch.device) -> tuple[str, DDPM | DDIM, Dict[str, Any]]:
+def prepare_sampler(
+        cfg: Dict[str, Any],
+        device: torch.device) -> Tuple[str, Union[DDPM, DDIM], Dict[str, Any]]:
     sampler_cfg = cfg["sampler"]
     sampler_type = sampler_cfg.get("type", "ddim").lower()
     steps = cfg["model"]["diffusion_steps"]
@@ -145,7 +147,7 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
     set_image_shape(data_cfg["image_size"], data_cfg["channels"])
     dataloader = create_dataloader(cfg["data"])
     net = build_model(cfg, device)
-    encoder, decoder = build_vae(cfg, device)
+    # encoder, decoder = build_vae(cfg, device)
     sampler_type, sampler, sampler_params = prepare_sampler(cfg, device)
     use_jet = data_cfg.get("channels", 3) == 1
 
@@ -160,6 +162,9 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
 
     with torch.inference_mode():
         for lr_images, hr_images, names in tqdm(dataloader, desc="Evaluating"):
+            seed = 1234
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
             lr_images = lr_images.to(device)
             hr_images = hr_images.to(device)
             batch_size = lr_images.size(0)
@@ -171,22 +176,29 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                                                    device=device,
                                                    **sampler_params)
 
-            if encoder and decoder:
-                noise_shape = (batch_size, 4, cfg["data"]["image_size"] // 8,
-                               cfg["data"]["image_size"] // 8)
-                noise = torch.randn(noise_shape, device=device)
-                latents, _, _ = encoder(sr_images, noise)
-                sr_images = decoder(latents)
+            # if encoder and decoder:
+            #     noise_shape = (batch_size, 4, cfg["data"]["image_size"] // 8,
+            #                    cfg["data"]["image_size"] // 8)
+            #     noise = torch.randn(noise_shape, device=device)
+            #     latents, _, _ = encoder(sr_images, noise)
+            #     sr_images = decoder(latents)
 
             sr_for_metric = denormalize(sr_images)
+            sr_for_metric = torch.where(sr_for_metric < cfg["sampler"].get("threshold", 0.95),
+                                         torch.zeros_like(sr_for_metric),
+                                         sr_for_metric)
+
+            # 进行压缩：将数值范围从[0,1]压缩到[0, 227/253]
+            sr_for_metric = sr_for_metric * (227.0 / 253.0)
+
             hr_for_metric = denormalize(hr_images)
 
             for idx, name in enumerate(names):
                 pred = sr_for_metric[idx].unsqueeze(0)
                 target = hr_for_metric[idx].unsqueeze(0)
-                psnr = peak_signal_noise_ratio(pred, target, data_range=1.0)
+                psnr = peak_signal_noise_ratio(pred, target)
                 ssim = structural_similarity_index_measure(
-                    pred, target, data_range=1.0)
+                    pred, target)
                 psnr_scores.append(psnr.item())
                 ssim_scores.append(ssim.item())
                 per_image_results.append({

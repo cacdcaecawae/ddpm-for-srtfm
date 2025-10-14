@@ -1,33 +1,34 @@
 {
   "device": "cuda",
   "data": {
-    "lr_root": "./data/TFM/eval/lr",
-    "hr_root": "./data/TFM/eval/hr",
+    "lr_root": "./data/eval/TFM",
+    "hr_root": "./data/eval/hr",
     "batch_size": 1,
     "num_workers": 4,
-    "image_size": 512,
+    "image_size": 400,
     "channels": 1
   },
   "model": {
     "module": "network",
     "backbone": "unet_res",
-    "diffusion_steps": 1000,
-    "checkpoint_path": "./SR/auotodl_weight/model_SR_0915.pth"
+    "diffusion_steps": 1000,  
+    "checkpoint_path": "./SR/autodl_weight/modelSR1009_07.pth"
   },
   "vae": {
-    "enabled": true,
-    "checkpoint_path": "./SR/auotodl_weight/vae_best-1.pt",
+    "enabled": false,
+    "checkpoint_path": "./SR/autodl_weight/vae_best-1.pt",
     "encoder_key": "enc",
     "decoder_key": "dec"
   },
   "sampler": {
+    "threshold": 0.98,
     "type": "ddim",
     "ddim_steps": 20,
     "eta": 1.0,
     "simple_var": false
   },
   "output": {
-    "root": "SR/vae/step20_eta1_0915",
+    "root": "SR/eval_results_1009_07",
     "save_images": true
   }
 }

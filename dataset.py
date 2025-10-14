@@ -2,6 +2,7 @@ import torchvision
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import Compose, Lambda, ToTensor
 from PIL import Image
+import torch.nn as nn
 from torchvision import transforms as T
 import os
 
@@ -9,6 +10,10 @@ import os
 class ConvertToRGB(object):
     def __call__(self, image):
         return image.convert('RGB')
+    
+class Identity(nn.Module):
+    def forward(self, x): 
+        return x
     
 class PairedImageDataset(Dataset):
     """
@@ -98,7 +103,7 @@ def set_image_shape(image_size: int, channels: int) -> None:
 def _build_transform(image_size=IMAGE_SIZE, channels=CHANNELS):
     # 先把 PIL 图像转到指定通道数，再做尺寸与归一化（[-1,1]）
     color_tf = (
-        T.Grayscale(num_output_channels=1)
+        Identity()
         if channels == 1 else
         ConvertToRGB()
     )
