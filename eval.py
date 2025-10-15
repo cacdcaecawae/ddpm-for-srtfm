@@ -2,7 +2,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -20,6 +20,13 @@ from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
                      convnet_small_cfg, unet_1_cfg, unet_res_cfg)
 from encoder import VAE_Encoder
 from decoder import VAE_Decoder
+
+JET_PALETTE: List[int] = (
+    (cm.jet(np.linspace(0.0, 1.0, 256))[:, :3] * 255.0)
+    .astype(np.uint8)
+    .reshape(-1)
+    .tolist()
+)
 
 MODEL_REGISTRY: Dict[str, Tuple] = {
     "network": (build_network, {
@@ -79,7 +86,7 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
 
     checkpoint = torch.load(cfg["model"]["checkpoint_path"],
                             map_location=device)
-    state_dict = checkpoint.get("ema_model_state_dict", checkpoint)
+    state_dict = checkpoint.get("ema_model_state_dict", checkpoint) # 修改模型加载方式
     model.load_state_dict(state_dict)
     model.eval()
     return model
@@ -131,11 +138,15 @@ def tensor_to_image(tensor: torch.Tensor,
                     apply_jet: bool = False) -> Image.Image:
     array = tensor.permute(1, 2, 0).cpu().numpy()
     array = np.clip(array, 0.0, 1.0)
-    if array.shape[2] == 1 and apply_jet:
-        gray_np = array[:, :, 0]
-        jet_colored = cm.jet(gray_np)
-        jet_colored_rgb = (jet_colored[:, :, :3] * 255).astype(np.uint8)
-        return Image.fromarray(jet_colored_rgb)
+    if apply_jet:
+        if array.shape[2] == 1:
+            gray_np = array[:, :, 0]
+        else:
+            gray_np = array.mean(axis=2)
+        gray_uint8 = (gray_np * 255.0).astype(np.uint8)
+        jet_image = Image.fromarray(gray_uint8, mode="P")
+        jet_image.putpalette(JET_PALETTE)
+        return jet_image
     array = (array * 255.0).astype(np.uint8)
     if array.shape[2] == 1:
         return Image.fromarray(array[:, :, 0], mode='L')
