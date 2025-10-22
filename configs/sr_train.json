@@ -2,11 +2,11 @@
   "seed": null,
   "device": "cuda",
   "data": {
-    "lr_root": "./data/train/TFM",
-    "hr_root": "./data/train/hr",
-    "batch_size": 2,
+    "lr_root": "./data/data_focus/train/TFM",
+    "hr_root": "./data/data_focus/train/hr",
+    "batch_size": 32,
     "num_workers": 4,
-    "image_size": 400,
+    "image_size": 101,
     "channels": 1
   },
   "model": {
@@ -14,7 +14,7 @@
     "backbone": "unet_res",
     "diffusion_steps": 1000,
     "checkpoint_dir": "SR/weight_ckpt",
-    "checkpoint_name": "model_SR_512.pth"
+    "checkpoint_name": "model0912.pth"
   },
   "optimization": {
     "epochs": 1000,

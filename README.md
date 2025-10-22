@@ -49,8 +49,7 @@ python eval.py --config configs/eval.json
 ## 实用脚本
 
 - SR_train.py：主训练入口，支持配置化训练与采样预览。
-- 
-oise.py：为单张图像添加 DDPM 前向噪声，可用于可视化退火过程。
+- noise.py：为单张图像添加 DDPM 前向噪声，可用于可视化退火过程。
 
 ## 测试
 

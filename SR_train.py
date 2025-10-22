@@ -79,14 +79,10 @@ def warmup_cosine(optimizer: torch.optim.Optimizer,
                   lr_min: float = 0.0,
                   lr_max: float = 1e-4,
                   warmup_epoch: int = 10) -> None:
-    if warmup_epoch > max_epoch:
-        warmup_epoch = max_epoch
     if current_epoch < warmup_epoch:
-        lr = lr_max * (current_epoch + 1) / max(1, warmup_epoch)
+        lr = lr_max * current_epoch / warmup_epoch
     else:
-        progress = (current_epoch - warmup_epoch) / max(
-            1, max_epoch - warmup_epoch)
-        lr = lr_min + (lr_max - lr_min) * (1 + math.cos(math.pi * progress)) / 2
+        lr = lr_min + (lr_max-lr_min)*(1 + math.cos(math.pi * (current_epoch - warmup_epoch) / (max_epoch - warmup_epoch))) / 2
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
@@ -175,6 +171,7 @@ def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
         image_size=data_cfg["image_size"],
         channels=data_cfg["channels"],
         num_workers=data_cfg.get("num_workers", 4),
+        augment=True,  # 🔥 启用数据增强（训练时）
     )
 
 
@@ -308,10 +305,14 @@ def train(ddpm: DDPM,
 
             channels = get_img_shape()[0]
             lr01 = ((lr_subset.detach().cpu().clamp(-1, 1) + 1) / 2)
+            hr01_display = ((hr_subset.clamp(-1, 1) + 1) / 2)
             net01 = ((img_net.detach().cpu().clamp(-1, 1) + 1) / 2)
             ema01 = ((img_ema.detach().cpu().clamp(-1, 1) + 1) / 2)
             writer.add_image(f'sample/epoch_{epoch + 1}_lr',
                              make_preview_grid(lr01, channels, preview_nrow),
+                             epoch + 1)
+            writer.add_image(f'sample/epoch_{epoch + 1}_hr',
+                             make_preview_grid(hr01_display, channels, preview_nrow),
                              epoch + 1)
             writer.add_image(f'sample/epoch_{epoch + 1}_net',
                              make_preview_grid(net01, channels, preview_nrow),

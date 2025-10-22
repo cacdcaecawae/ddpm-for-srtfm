@@ -200,7 +200,7 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                                          sr_for_metric)
 
             # 进行压缩：将数值范围从[0,1]压缩到[0, 227/253]
-            sr_for_metric = sr_for_metric * (227.0 / 253.0)
+            sr_for_image = sr_for_metric * (227.0 / 253.0)
 
             hr_for_metric = denormalize(hr_images)
 
@@ -218,7 +218,7 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                     "ssim": ssim.item(),
                 })
                 if cfg["output"].get("save_images", True):
-                    tensor_to_image(sr_for_metric[idx],
+                    tensor_to_image(sr_for_image[idx],
                                     apply_jet=use_jet).save(images_dir / name)
 
     avg_psnr = float(np.mean(psnr_scores)) if psnr_scores else 0.0

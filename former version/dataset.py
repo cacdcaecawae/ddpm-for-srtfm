@@ -90,7 +90,7 @@ def get_dataloader(batch_size: int):
 
 # 这里使用自定义数据集，你可以在文件顶部设置三项超参
 IMAGE_ROOT = 'D:/深度学习框架/DDPM/butterfly_images_for_training'  # 改成你的本地目录
-IMAGE_SIZE = 400                                # 统一缩放/裁剪到这个尺寸
+IMAGE_SIZE = 101                                # 统一缩放/裁剪到这个尺寸
 CHANNELS   = 1                                  # 灰度=1，彩色=3
 
 def _build_transform(image_size=IMAGE_SIZE, channels=CHANNELS):
