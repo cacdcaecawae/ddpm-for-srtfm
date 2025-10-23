@@ -1,17 +1,19 @@
 {
   "device": "cuda",
   "data": {
-    "lr_root": "./data/data_focus/eval/TFM",
-    "hr_root": "./data/data_focus/eval/hr",
     "batch_size": 1,
     "num_workers": 4,
     "image_size": 101,
-    "channels": 1
+    "channels": 1,
+    "h5_path": "/data/eval.h5",
+    "h5_lr_key": "lr",
+    "h5_hr_key": "hr",
+    "augment": false
   },
   "model": {
     "module": "network",
     "backbone": "unet_res",
-    "diffusion_steps": 1000,  
+    "diffusion_steps": 1000,
     "checkpoint_path": "./SR/autodl_weight/model1020focus-1.pth"
   },
   "vae": {

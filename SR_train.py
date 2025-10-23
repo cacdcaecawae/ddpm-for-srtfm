@@ -45,6 +45,24 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def safe_replace(src: Path, dst: Path, retries: int = 5, delay: float = 0.1) -> None:
+    """Work around Windows file locking when replacing checkpoints."""
+    last_error: Optional[Exception] = None
+    for _ in range(max(1, retries)):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if dst.exists():
+                try:
+                    dst.unlink()
+                except PermissionError:
+                    time.sleep(delay)
+            time.sleep(delay)
+    raise last_error if last_error else PermissionError(f"Failed to replace {dst}")
+
+
 def set_seed(seed: Optional[int]) -> None:
     if seed is None:
         return
@@ -164,15 +182,25 @@ def maybe_load_checkpoint(net: nn.Module, cfg: Dict[str, Any],
 
 def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
     data_cfg = cfg["data"]
+    value_range = data_cfg.get("value_range")
+    if value_range is not None:
+        value_range = tuple(value_range)
     return get_paired_dataloader(
         batch_size=data_cfg["batch_size"],
-        lr_root=data_cfg["lr_root"],
-        hr_root=data_cfg["hr_root"],
+        lr_root=data_cfg.get("lr_root"),
+        hr_root=data_cfg.get("hr_root"),
         image_size=data_cfg["image_size"],
         channels=data_cfg["channels"],
         num_workers=data_cfg.get("num_workers", 4),
-        augment=True,  # 🔥 启用数据增强（训练时）
+        augment=data_cfg.get("augment", True),
+        h5_path=data_cfg.get("h5_path"),
+        h5_lr_key=data_cfg.get("h5_lr_key", "lr"),
+        h5_hr_key=data_cfg.get("h5_hr_key", "hr"),
+        value_range=value_range,
+        h5_lr_dataset=data_cfg.get("h5_lr_dataset"),
+        h5_hr_dataset=data_cfg.get("h5_hr_dataset"),
     )
+
 
 
 def train(ddpm: DDPM,
@@ -355,7 +383,7 @@ def train(ddpm: DDPM,
             best_path = ckpt_path.with_name(f"{ckpt_path.stem}_best.pth")
             tmp_best = best_path.with_suffix(best_path.suffix + ".tmp")
             torch.save(ckpt_best, tmp_best)
-            os.replace(tmp_best, best_path)
+            safe_replace(tmp_best, best_path)
 
         ckpt = {
             'epoch': epoch + 1,
@@ -375,7 +403,7 @@ def train(ddpm: DDPM,
         }
         tmp_ckpt = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
         torch.save(ckpt, tmp_ckpt)
-        os.replace(tmp_ckpt, ckpt_path)
+        safe_replace(tmp_ckpt, ckpt_path)
 
     writer.close()
     print("Done training!")
