@@ -77,6 +77,8 @@ def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
         value_range=value_range,
         h5_lr_dataset=cfg.get("h5_lr_dataset"),
         h5_hr_dataset=cfg.get("h5_hr_dataset"),
+        transpose_lr=cfg.get("transpose_lr", False),
+        transpose_hr=cfg.get("transpose_hr", False),
     )
 
 

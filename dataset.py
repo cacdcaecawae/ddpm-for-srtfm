@@ -176,6 +176,8 @@ class PairedH5Dataset(Dataset):
         value_range: Optional[Tuple[float, float]] = None,
         lr_dataset_name: Optional[str] = None,
         hr_dataset_name: Optional[str] = None,
+        transpose_lr: bool = False,
+        transpose_hr: bool = False,
     ):
         self.h5_path = str(h5_path)
         self.lr_key = lr_key
@@ -184,6 +186,8 @@ class PairedH5Dataset(Dataset):
         self.value_range = value_range
         self.lr_dataset_name = lr_dataset_name
         self.hr_dataset_name = hr_dataset_name
+        self.transpose_lr = transpose_lr
+        self.transpose_hr = transpose_hr
 
         self._file: Optional[h5py.File] = None
         self._sample_names: Optional[List[str]] = None
@@ -319,26 +323,17 @@ class PairedH5Dataset(Dataset):
                 return np.moveaxis(array, -1, 0)
         raise ValueError(f"Unsupported array shape {array.shape}, expected HxW or CxHxW.")
 
-    def _array_to_tensor(self, array: np.ndarray, is_lr: bool = False) -> torch.Tensor:
-        """
-        将 numpy 数组转换为 tensor
-        Args:
-            array: 输入数组
-            is_lr: 是否是 LR 数据，如果是则应用 value_range 转换
-        """
+    def _array_to_tensor(self, array: np.ndarray) -> torch.Tensor:
+        """Map numpy array to tensor in [0, 1] using its own min/max."""
         tensor = torch.from_numpy(self._ensure_chw(array)).float()
-        if is_lr and self.value_range is not None:
-            # 只对 LR 应用 value_range 线性变换
-            low, high = self.value_range
-            if high <= low:
-                raise ValueError("value_range must have high > low.")
-            tensor = tensor.clamp(low, high)
-            tensor = (tensor - low) / (high - low)
-        elif np.issubdtype(array.dtype, np.integer):
-            tensor = tensor / 255.0
+        t_min = tensor.amin()
+        t_max = tensor.amax()
+        if torch.isclose(t_max, t_min):
+            tensor = torch.zeros_like(tensor)
         else:
-            tensor = tensor.clamp(0.0, 1.0)
+            tensor = (tensor - t_min) / (t_max - t_min)
         return tensor
+
 
     def __len__(self) -> int:
         self._ensure_structure()
@@ -368,13 +363,26 @@ class PairedH5Dataset(Dataset):
             lr_array = np.asarray(file[lr_path])
             hr_array = np.asarray(file[hr_path])
 
-        lr_tensor = self._array_to_tensor(lr_array, is_lr=True)  # LR 应用 value_range
-        hr_tensor = self._array_to_tensor(hr_array, is_lr=False)  # HR 直接转换
+        lr_array = self._maybe_transpose(lr_array, self.transpose_lr)
+        hr_array = self._maybe_transpose(hr_array, self.transpose_hr)
+
+        lr_tensor = self._array_to_tensor(lr_array)  # LR 应用 value_range
+        hr_tensor = self._array_to_tensor(hr_array)  # HR 直接转换
 
         if self.transform:
             lr_tensor, hr_tensor = self.transform(lr_tensor, hr_tensor)
 
         return lr_tensor, hr_tensor, sample_name
+
+    @staticmethod
+    def _maybe_transpose(array: np.ndarray, flag: bool) -> np.ndarray:
+        if not flag:
+            return array
+        if array.ndim == 2:
+            return array.T
+        if array.ndim == 3:
+            return np.swapaxes(array, -1, -2)
+        raise ValueError("Only 2D or 3D arrays can be transposed automatically.")
 
 
 def download_dataset():
@@ -468,6 +476,8 @@ def get_paired_dataloader(
     h5_lr_dataset: Optional[str] = None,
     h5_hr_dataset: Optional[str] = None,
     value_range: Optional[Tuple[float, float]] = None,
+    transpose_lr: bool = False,
+    transpose_hr: bool = False,
 ):
     set_image_shape(image_size, channels)
     transform = PairedTransform(image_size, channels, augment=augment)
@@ -481,6 +491,8 @@ def get_paired_dataloader(
             value_range=value_range,
             lr_dataset_name=h5_lr_dataset,
             hr_dataset_name=h5_hr_dataset,
+            transpose_lr=transpose_lr,
+            transpose_hr=transpose_hr,
         )
     else:
         if lr_root is None or hr_root is None:

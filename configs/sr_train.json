@@ -10,11 +10,9 @@
     "h5_lr_key": "TFM",
     "h5_hr_key": "hr",
     "augment": false,
-    "value_range": [
-      -12.0,
-      0.008682
-    ],
-    "h5_lr_dataset": "intensity"
+    "h5_lr_dataset": "intensity",
+    "transpose_lr": true,
+    "transpose_hr": true
   },
   "model": {
     "module": "network",
