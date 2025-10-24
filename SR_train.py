@@ -18,7 +18,7 @@ from torchvision.utils import make_grid
 from torchmetrics.functional import peak_signal_noise_ratio
 from tqdm import tqdm
 
-from dataset import get_img_shape, get_paired_dataloader, set_image_shape
+from dataset import get_h5_dataloader
 from ddpm_simple import DDPM
 from ddim import DDIM
 from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
@@ -158,13 +158,24 @@ def save_grid_image(tensor: torch.Tensor, output_path: Path) -> None:
 
 def build_model(cfg: Dict[str, Any], device: torch.device) -> nn.Module:
     model_cfg = cfg["model"]
+    data_cfg = cfg["data"]
     backbone_key = model_cfg["backbone"]
     if backbone_key not in MODEL_CONFIGS:
         raise KeyError(f"Unknown backbone '{backbone_key}'. "
                        f"Available: {', '.join(MODEL_CONFIGS)}")
     net_cfg = MODEL_CONFIGS[backbone_key].copy()
     n_steps = model_cfg["diffusion_steps"]
-    net = build_network(net_cfg, n_steps).to(device)
+    
+    # 获取输入通道数和图像尺寸
+    in_channels = data_cfg["channels"]  # HR 的通道数
+    image_size = data_cfg["image_size"]
+    
+    # LR 的通道数
+    lr_channels = in_channels
+    if data_cfg.get("use_tfm_channels", False):
+        lr_channels = 3  # TFM 模式: I, X, Y 三通道
+    
+    net = build_network(net_cfg, n_steps, in_channels, image_size, lr_channels).to(device)
     return net
 
 
@@ -180,27 +191,37 @@ def maybe_load_checkpoint(net: nn.Module, cfg: Dict[str, Any],
     print(f"Loaded weights from {resume_path}")
 
 
+def get_image_shape_from_config(cfg: Dict[str, Any]) -> Tuple[int, int, int]:
+    """从配置中获取图像形状 (channels, height, width)"""
+    data_cfg = cfg["data"]
+    channels = data_cfg["channels"]
+    image_size = data_cfg["image_size"]
+    return (channels, image_size, image_size)
+
+
 def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
     data_cfg = cfg["data"]
-    value_range = data_cfg.get("value_range")
-    if value_range is not None:
-        value_range = tuple(value_range)
-    return get_paired_dataloader(
+    
+    # 构建 coord_range 参数
+    coord_range = None
+    if data_cfg.get("use_tfm_channels", False):
+        coord_range_x = tuple(data_cfg["coord_range_x"]) if "coord_range_x" in data_cfg else (-1.0, 1.0)
+        coord_range_y = tuple(data_cfg["coord_range_y"]) if "coord_range_y" in data_cfg else (-1.0, 1.0)
+        coord_range = (coord_range_x, coord_range_y)
+    
+    return get_h5_dataloader(
+        h5_path=data_cfg["h5_path"],
         batch_size=data_cfg["batch_size"],
-        lr_root=data_cfg.get("lr_root"),
-        hr_root=data_cfg.get("hr_root"),
-        image_size=data_cfg["image_size"],
-        channels=data_cfg["channels"],
-        num_workers=data_cfg.get("num_workers", 4),
-        augment=data_cfg.get("augment", True),
-        h5_path=data_cfg.get("h5_path"),
-        h5_lr_key=data_cfg.get("h5_lr_key", "lr"),
-        h5_hr_key=data_cfg.get("h5_hr_key", "hr"),
-        value_range=value_range,
-        h5_lr_dataset=data_cfg.get("h5_lr_dataset"),
-        h5_hr_dataset=data_cfg.get("h5_hr_dataset"),
+        lr_key=data_cfg.get("h5_lr_key", "TFM"),
+        hr_key=data_cfg.get("h5_hr_key", "hr"),
+        lr_dataset_name=data_cfg.get("h5_lr_dataset"),
+        hr_dataset_name=data_cfg.get("h5_hr_dataset"),
         transpose_lr=data_cfg.get("transpose_lr", False),
         transpose_hr=data_cfg.get("transpose_hr", False),
+        use_tfm_channels=data_cfg.get("use_tfm_channels", False),
+        coord_range=coord_range,
+        num_workers=data_cfg.get("num_workers", 4),
+        shuffle=data_cfg.get("augment", True),
     )
 
 
@@ -305,14 +326,13 @@ def train(ddpm: DDPM,
             with torch.inference_mode():
                 preview_batch = min(preview_count, lr_images.size(0))
                 lr_subset = lr_images[:preview_batch]
-                img_net = ddpm.sample_backward_sr((preview_batch,
-                                                   *get_img_shape()),
+                img_shape = get_image_shape_from_config(cfg)
+                img_net = ddpm.sample_backward_sr((preview_batch, *img_shape),
                                                   net,
                                                   lr_subset,
                                                   device=device,
                                                   simple_var=True).cpu()
-                img_ema = ddpm.sample_backward_sr((preview_batch,
-                                                   *get_img_shape()),
+                img_ema = ddpm.sample_backward_sr((preview_batch, *img_shape),
                                                   ema_net,
                                                   lr_subset,
                                                   device=device,
@@ -333,7 +353,7 @@ def train(ddpm: DDPM,
             if psnr_scores:
                 mean_psnr = float(sum(psnr_scores) / len(psnr_scores))
 
-            channels = get_img_shape()[0]
+            channels = img_shape[0]
             lr01 = ((lr_subset.detach().cpu().clamp(-1, 1) + 1) / 2)
             hr01_display = ((hr_subset.clamp(-1, 1) + 1) / 2)
             net01 = ((img_net.detach().cpu().clamp(-1, 1) + 1) / 2)
@@ -418,17 +438,19 @@ def sample_imgs(ddpm: DDPM,
                 output_path: Path,
                 device: torch.device,
                 nrow: int,
+                cfg: Dict[str, Any],
                 simple_var: bool = True) -> None:
     net = net.to(device).eval()
     with torch.no_grad():
-        shape = (lr_images.size(0), *get_img_shape())
+        img_shape = get_image_shape_from_config(cfg)
+        shape = (lr_images.size(0), *img_shape)
         samples = ddpm.sample_backward_sr(shape,
                                           net,
                                           lr_images.to(device),
                                           device=device,
                                           simple_var=simple_var).cpu()
         samples = ((samples + 1) / 2).clamp(0, 1)
-    grid = make_preview_grid(samples, get_img_shape()[0], nrow)
+    grid = make_preview_grid(samples, img_shape[0], nrow)
     save_grid_image(grid, output_path)
 
 
@@ -438,12 +460,14 @@ def sample_imgs_ddim(ddim: DDIM,
                      output_path: Path,
                      device: torch.device,
                      nrow: int,
+                     cfg: Dict[str, Any],
                      ddim_step: int = 50,
                      eta: float = 0.0,
                      simple_var: bool = True) -> None:
     net = net.to(device).eval()
     with torch.no_grad():
-        shape = (lr_images.size(0), *get_img_shape())
+        img_shape = get_image_shape_from_config(cfg)
+        shape = (lr_images.size(0), *img_shape)
         samples = ddim.sample_backward_sr(shape,
                                           net,
                                           lr_images.to(device),
@@ -452,7 +476,7 @@ def sample_imgs_ddim(ddim: DDIM,
                                           ddim_step=ddim_step,
                                           eta=eta).cpu()
         samples = ((samples + 1) / 2).clamp(0, 1)
-    grid = make_preview_grid(samples, get_img_shape()[0], nrow)
+    grid = make_preview_grid(samples, img_shape[0], nrow)
     save_grid_image(grid, output_path)
 
 
@@ -504,9 +528,6 @@ def main() -> None:
     else:
         print("Seed disabled; results will vary between runs.")
 
-    data_cfg = cfg["data"]
-    set_image_shape(data_cfg["image_size"], data_cfg["channels"])
-
     device = resolve_device(cfg.get("device"))
     print(f"Using device: {device}")
 
@@ -542,6 +563,7 @@ def main() -> None:
                         preview_path,
                         device,
                         nrow,
+                        cfg,
                         simple_var=cfg["sampler"].get("simple_var", True))
     else:
         ckpt_to_use = args.checkpoint or cfg["model"]["checkpoint_path"]
@@ -566,6 +588,7 @@ def main() -> None:
                         output_path,
                         device,
                         nrow,
+                        cfg,
                         simple_var=cfg["sampler"].get("simple_var", True))
         else:
             output_path = preview_dir / f"{timestamp}_sample_ddim.png"
@@ -578,6 +601,7 @@ def main() -> None:
                              output_path,
                              device,
                              nrow,
+                             cfg,
                              ddim_step=ddim_steps,
                              eta=eta,
                              simple_var=cfg["sampler"].get(

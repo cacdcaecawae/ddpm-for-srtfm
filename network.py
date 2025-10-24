@@ -3,7 +3,6 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataset import get_img_shape
 
 
 class PositionalEncoding(nn.Module):
@@ -62,21 +61,21 @@ class ConvNet(nn.Module):
 
     def __init__(self,
                  n_steps: int,
+                 in_channels: int = 1,
                  intermediate_channels=None,
                  pe_dim: int = 10,
                  insert_t_to_all_layers: bool = False) -> None:
         super().__init__()
         if intermediate_channels is None:
             intermediate_channels = [10, 20, 40]
-        channels, _, _ = get_img_shape()
         self.pe = PositionalEncoding(n_steps, pe_dim)
 
         self.pe_linears = nn.ModuleList()
         if not insert_t_to_all_layers:
-            self.pe_linears.append(nn.Linear(pe_dim, channels))
+            self.pe_linears.append(nn.Linear(pe_dim, in_channels))
 
         self.residual_blocks = nn.ModuleList()
-        prev_channel = channels
+        prev_channel = in_channels
         for channel in intermediate_channels:
             self.residual_blocks.append(ResidualBlock(prev_channel, channel))
             if insert_t_to_all_layers:
@@ -84,7 +83,7 @@ class ConvNet(nn.Module):
             else:
                 self.pe_linears.append(None)
             prev_channel = channel
-        self.output_layer = nn.Conv2d(prev_channel, channels, 3, 1, 1)
+        self.output_layer = nn.Conv2d(prev_channel, in_channels, 3, 1, 1)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         batch_size = t.shape[0]
@@ -165,13 +164,23 @@ class UNet(nn.Module):
 
     def __init__(self,
                  n_steps: int,
+                 in_channels: int = 1,
+                 image_size: int = 101,
+                 lr_channels: Optional[int] = None,
                  channels=None,
                  pe_dim: int = 128,
                  residual: bool = False) -> None:
         super().__init__()
         if channels is None:
             channels = [10, 20, 40, 80]
-        c, h, w = get_img_shape()
+        c, h, w = in_channels, image_size, image_size
+        
+        # LR 通道数默认与 HR 相同,但在 TFM 模式下可能不同
+        if lr_channels is None:
+            lr_channels = in_channels
+        
+        self.in_channels = in_channels
+        self.lr_channels = lr_channels
 
         self.pe = PositionalEncoding(n_steps, pe_dim)
         self.t_mlp = nn.Sequential(
@@ -188,13 +197,14 @@ class UNet(nn.Module):
             current_w //= 2
             hs.append(current_h)
             ws.append(current_w)
-
+        
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         self.downs = nn.ModuleList()
         self.ups = nn.ModuleList()
 
-        prev_channel = c * 2  # concatenate HR guess with LR guide
+        # 输入是 HR + LR concatenated
+        prev_channel = c + lr_channels
         for channel, ch, cw in zip(channels[:-1], hs[:-1], ws[:-1]):
             self.encoders.append(
                 SeqT(
@@ -299,9 +309,17 @@ unet_res_cfg = {
 }
 
 
-def build_network(config: dict, n_steps: int) -> nn.Module:
+def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: int = 101, lr_channels: Optional[int] = None) -> nn.Module:
     cfg = config.copy()
     network_type = cfg.pop('type')
+    
+    # 添加 in_channels 和 image_size 到配置中
+    cfg['in_channels'] = in_channels
+    if network_type == 'UNet':
+        cfg['image_size'] = image_size
+        if lr_channels is not None:
+            cfg['lr_channels'] = lr_channels
+    
     if network_type == 'ConvNet':
         network_cls = ConvNet
     elif network_type == 'UNet':

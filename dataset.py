@@ -1,170 +1,25 @@
-import os
-import random
-from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import List, Optional
 
 import h5py
 import numpy as np
 import torch
-import torch.nn as nn
-import torchvision
-import torchvision.transforms.functional as TF
-from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms as T
-from torchvision.transforms import Compose, InterpolationMode, Lambda, ToTensor
 
 
-class ConvertToRGB:
-    def __call__(self, image: Image.Image) -> Image.Image:
-        return image.convert("RGB")
-
-
-class Identity(nn.Module):
-    def forward(self, x):  # type: ignore[override]
-        return x
-
-
-class PairedTransform:
+class H5PairedDataset(Dataset):
     """
-    对配对的 LR/HR 图像应用一致的随机增强，支持 PIL 或张量输入。
-    """
-
-    def __init__(self, image_size: int, channels: int = 1, augment: bool = False):
-        self.image_size = image_size
-        self.channels = channels
-        self.augment = augment
-
-    def _to_tensor(self, image: Any) -> torch.Tensor:
-        if isinstance(image, Image.Image):
-            desired_mode = "L" if self.channels == 1 else "RGB"
-            if image.mode != desired_mode:
-                image = image.convert(desired_mode)
-            tensor = TF.to_tensor(image)
-        elif torch.is_tensor(image):
-            tensor = image.float()
-            if tensor.ndim == 2:
-                tensor = tensor.unsqueeze(0)
-            elif tensor.ndim == 3:
-                if tensor.shape[0] in (1, 3):
-                    pass
-                elif tensor.shape[-1] in (1, 3):
-                    tensor = tensor.permute(2, 0, 1)
-                else:
-                    raise ValueError("Unsupported tensor shape for image data.")
-            else:
-                raise ValueError("Image tensor must have 2 or 3 dimensions.")
-            if tensor.max() > 1.0 or tensor.min() < 0.0:
-                tensor = tensor.clamp(0.0, 1.0)
-        else:
-            raise TypeError(f"Unsupported image type: {type(image)}")
-        return self._match_channels(tensor)
-
-    def _match_channels(self, tensor: torch.Tensor) -> torch.Tensor:
-        if tensor.ndim != 3:
-            raise ValueError("Tensor input should have shape [C, H, W].")
-        if self.channels == 1:
-            if tensor.shape[0] == 1:
-                return tensor
-            if tensor.shape[0] == 3:
-                gray = (
-                    0.2989 * tensor[0]
-                    + 0.5870 * tensor[1]
-                    + 0.1140 * tensor[2]
-                ).unsqueeze(0)
-                return gray
-            raise ValueError("Cannot convert tensor with unexpected channels to grayscale.")
-        if self.channels == 3:
-            if tensor.shape[0] == 3:
-                return tensor
-            if tensor.shape[0] == 1:
-                return tensor.repeat(3, 1, 1)
-            raise ValueError("Cannot convert tensor with unexpected channels to RGB.")
-        raise ValueError(f"Unsupported target channels: {self.channels}")
-
-    def __call__(self, lr_image: Any, hr_image: Any) -> Tuple[torch.Tensor, torch.Tensor]:
-        lr_tensor = self._to_tensor(lr_image)
-        hr_tensor = self._to_tensor(hr_image)
-
-        lr_tensor = TF.resize(
-            lr_tensor,
-            self.image_size,
-            interpolation=InterpolationMode.BICUBIC,
-            antialias=True,
-        )
-        hr_tensor = TF.resize(
-            hr_tensor,
-            self.image_size,
-            interpolation=InterpolationMode.BICUBIC,
-            antialias=True,
-        )
-
-        lr_tensor = TF.center_crop(lr_tensor, self.image_size)
-        hr_tensor = TF.center_crop(hr_tensor, self.image_size)
-
-        if self.augment:
-            if random.random() > 0.5:
-                lr_tensor = TF.hflip(lr_tensor)
-                hr_tensor = TF.hflip(hr_tensor)
-
-            max_translate = int(0.05 * self.image_size)
-            translate_x = random.randint(-max_translate, max_translate)
-            translate_y = random.randint(-max_translate, max_translate)
-            affine_kwargs = {
-                "angle": 0.0,
-                "translate": (translate_x, translate_y),
-                "scale": 1.0,
-                "shear": 0.0,
-                "interpolation": InterpolationMode.BILINEAR,
-                "fill": 0.0,
-            }
-            lr_tensor = TF.affine(lr_tensor, **affine_kwargs)
-            hr_tensor = TF.affine(hr_tensor, **affine_kwargs)
-
-        mean = [0.5] * self.channels
-        std = [0.5] * self.channels
-        lr_tensor = TF.normalize(lr_tensor, mean=mean, std=std)
-        hr_tensor = TF.normalize(hr_tensor, mean=mean, std=std)
-
-        return lr_tensor, hr_tensor
-
-
-class PairedImageDataset(Dataset):
-    """
-    普通文件夹版本的配对数据集。
-    """
-
-    def __init__(self, lr_dir: str, hr_dir: str, transform: Optional[PairedTransform] = None):
-        self.lr_dir = lr_dir
-        self.hr_dir = hr_dir
-        self.transform = transform
-        self.image_files = sorted(os.listdir(lr_dir))
-
-    def __len__(self) -> int:
-        return len(self.image_files)
-
-    def __getitem__(self, idx: int):
-        img_name = self.image_files[idx]
-        lr_path = os.path.join(self.lr_dir, img_name)
-        hr_path = os.path.join(self.hr_dir, img_name)
-
-        with Image.open(lr_path) as lr_img:
-            lr_image = lr_img.copy()
-        with Image.open(hr_path) as hr_img:
-            hr_image = hr_img.copy()
-
-        if self.transform:
-            lr_image, hr_image = self.transform(lr_image, hr_image)
-
-        return lr_image, hr_image, img_name
-
-
-class PairedH5Dataset(Dataset):
-    """
-    针对根下包含两个分组（如 TFM / hr），每个分组按编号存放样本的 HDF5 数据集。
-    - lr_key / hr_key 可以指向分组或直接指向数据集；
-    - 若分组下包含多个数据集，可通过 lr_dataset_name / hr_dataset_name 指定目标条目；
-    - 默认为交集编号进行配对。
+    HDF5 嵌套结构的配对数据集，读取 LR/HR 样本。
+    
+    预期的 HDF5 结构：
+        file.h5
+        ├── TFM/
+        │   ├── 000001/data
+        │   ├── 000002/data
+        │   └── ...
+        └── hr/
+            ├── 000001/data
+            ├── 000002/data
+            └── ...
     """
 
     def __init__(
@@ -172,31 +27,27 @@ class PairedH5Dataset(Dataset):
         h5_path: str,
         lr_key: str = "TFM",
         hr_key: str = "hr",
-        transform: Optional[PairedTransform] = None,
-        value_range: Optional[Tuple[float, float]] = None,
         lr_dataset_name: Optional[str] = None,
         hr_dataset_name: Optional[str] = None,
         transpose_lr: bool = False,
         transpose_hr: bool = False,
+        use_tfm_channels: bool = False,  # 是否使用 I, X, Y 三通道
+        coord_range: Optional[tuple] = None,  # X, Y 坐标的归一化范围 (min, max)
     ):
-        self.h5_path = str(h5_path)
+        self.h5_path = h5_path
         self.lr_key = lr_key
         self.hr_key = hr_key
-        self.transform = transform
-        self.value_range = value_range
         self.lr_dataset_name = lr_dataset_name
         self.hr_dataset_name = hr_dataset_name
         self.transpose_lr = transpose_lr
         self.transpose_hr = transpose_hr
+        self.use_tfm_channels = use_tfm_channels
+        self.coord_range = coord_range if coord_range else (-1.0, 1.0)  # 默认 [-1, 1]
 
         self._file: Optional[h5py.File] = None
         self._sample_names: Optional[List[str]] = None
-        self._lr_dataset_paths: Optional[List[str]] = None
-        self._hr_dataset_paths: Optional[List[str]] = None
-        self._flat_mode: bool = False
-        self._flat_length: int = 0
-        self._lr_flat_path: Optional[str] = None
-        self._hr_flat_path: Optional[str] = None
+        self._lr_paths: Optional[List[str]] = None
+        self._hr_paths: Optional[List[str]] = None
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -207,7 +58,174 @@ class PairedH5Dataset(Dataset):
         self.__dict__.update(state)
         self._file = None
 
-    def close(self) -> None:
+    def _open_file(self) -> h5py.File:
+        if self._file is None:
+            self._file = h5py.File(self.h5_path, "r")
+        return self._file
+
+    def _init_structure(self) -> None:
+        """初始化数据集结构，建立 LR/HR 样本映射"""
+        if self._sample_names is not None:
+            return
+
+        f = self._open_file()
+        
+        if self.lr_key not in f or self.hr_key not in f:
+            raise KeyError(f"HDF5 文件缺少 '{self.lr_key}' 或 '{self.hr_key}' 分组")
+
+        lr_group = f[self.lr_key]
+        hr_group = f[self.hr_key]
+
+        # 找到共同的样本编号
+        lr_names = set(lr_group.keys())
+        hr_names = set(hr_group.keys())
+        shared = sorted(lr_names & hr_names)
+        
+        if not shared:
+            raise ValueError(f"LR 和 HR 分组下没有共同的样本编号")
+
+        self._sample_names = shared
+        self._lr_paths = []
+        self._hr_paths = []
+
+        # 构建每个样本的 dataset 路径
+        for name in shared:
+            self._lr_paths.append(self._get_dataset_path(lr_group[name], self.lr_dataset_name, name))
+            self._hr_paths.append(self._get_dataset_path(hr_group[name], self.hr_dataset_name, name))
+
+    def _get_dataset_path(self, node: h5py.Group, dataset_name: Optional[str], sample_name: str) -> str:
+        """从分组节点中获取 dataset 路径"""
+        if isinstance(node, h5py.Dataset):
+            return node.name
+
+        # 如果指定了 dataset 名称，直接使用
+        if dataset_name:
+            if dataset_name not in node:
+                raise KeyError(f"样本 '{sample_name}' 下找不到 dataset '{dataset_name}'")
+            return node[dataset_name].name
+
+        # 否则自动查找唯一的 dataset
+        datasets = [child.name for child in node.values() if isinstance(child, h5py.Dataset)]
+        if len(datasets) == 1:
+            return datasets[0]
+        elif len(datasets) == 0:
+            raise ValueError(f"样本 '{sample_name}' 下没有 dataset")
+        else:
+            raise ValueError(f"样本 '{sample_name}' 下有多个 dataset，请指定 dataset_name 参数")
+
+    @staticmethod
+    def _normalize(array: np.ndarray, transpose: bool = False) -> torch.Tensor:
+        """将 numpy 数组归一化到 [-1, 1]"""
+        # MATLAB 转置：MATLAB 列优先存储，Python 行优先
+        # MATLAB (H, W) → HDF5 读为 (W, H)
+        # MATLAB (H, W, C) → HDF5 读为 (C, W, H)
+        if transpose:
+            if array.ndim == 2:
+                # 2D 灰度图：(W, H) → (H, W)
+                array = array.T
+            elif array.ndim == 3:
+                # 3D 数组：假设是 (C, W, H)，交换 W 和 H
+                # (C, W, H) → (C, H, W)
+                array = np.transpose(array, (0, 2, 1))
+        
+        # 确保是 [C, H, W] 格式（添加通道维度）
+        if array.ndim == 2:
+            array = array[None, ...]  # (H, W) → (1, H, W)
+        
+        tensor = torch.from_numpy(array).float()
+        
+        # Min-max 归一化到 [0, 1]
+        t_min, t_max = tensor.min(), tensor.max()
+        if t_max > t_min:
+            tensor = (tensor - t_min) / (t_max - t_min)
+        
+        # 映射到 [-1, 1]
+        tensor = tensor * 2.0 - 1.0
+        return tensor
+
+    @staticmethod
+    def _normalize_intensity(array: np.ndarray) -> torch.Tensor:
+        """归一化强度图像 (I)，使用自适应 min-max 到 [-1, 1]"""
+        if array.ndim == 2:
+            array = array[None, ...]  # (H, W) → (1, H, W)
+        
+        tensor = torch.from_numpy(array).float()
+        
+        # 自适应 min-max 归一化
+        t_min, t_max = tensor.min(), tensor.max()
+        if t_max > t_min:
+            tensor = (tensor - t_min) / (t_max - t_min)  # → [0, 1]
+        
+        tensor = tensor * 2.0 - 1.0  # → [-1, 1]
+        return tensor
+
+    @staticmethod
+    def _normalize_coords(array: np.ndarray, coord_range: tuple) -> torch.Tensor:
+        """归一化坐标数据 (X/Y)，使用固定范围到 [-1, 1]"""
+        if array.ndim == 2:
+            array = array[None, ...]  # (H, W) → (1, H, W)
+        
+        tensor = torch.from_numpy(array).float()
+        
+        # 使用固定范围归一化
+        min_val, max_val = coord_range
+        tensor = (tensor - min_val) / (max_val - min_val)  # → [0, 1]
+        tensor = tensor * 2.0 - 1.0  # → [-1, 1]
+        
+        return tensor
+
+    def __len__(self) -> int:
+        self._init_structure()
+        return len(self._sample_names)
+
+    def __getitem__(self, idx: int):
+        self._init_structure()
+        f = self._open_file()
+
+        sample_name = self._sample_names[idx]
+        
+        # 处理 LR (TFM) 数据
+        if self.use_tfm_channels:
+            # 读取 I, X, Y 三个数据集
+            lr_group = f[self._lr_paths[idx]].parent  # 获取父分组
+            
+            # 读取三个通道
+            I_array = np.asarray(lr_group['I']) if 'I' in lr_group else np.asarray(f[self._lr_paths[idx]])
+            X_array = np.asarray(lr_group['X']) if 'X' in lr_group else None
+            Y_array = np.asarray(lr_group['Y']) if 'Y' in lr_group else None
+            
+            # 转置处理
+            if self.transpose_lr:
+                I_array = I_array.T if I_array.ndim == 2 else np.transpose(I_array, (0, 2, 1))
+                if X_array is not None:
+                    X_array = X_array.T if X_array.ndim == 2 else np.transpose(X_array, (0, 2, 1))
+                if Y_array is not None:
+                    Y_array = Y_array.T if Y_array.ndim == 2 else np.transpose(Y_array, (0, 2, 1))
+            
+            # 归一化 I（强度）：自适应 min-max
+            I_tensor = self._normalize_intensity(I_array)
+            
+            # 归一化 X, Y（坐标）：固定范围
+            if X_array is not None and Y_array is not None:
+                X_tensor = self._normalize_coords(X_array, self.coord_range[0])
+                Y_tensor = self._normalize_coords(Y_array, self.coord_range[1])
+                # 拼接成 [3, H, W]
+                lr_tensor = torch.cat([I_tensor, X_tensor, Y_tensor], dim=0)
+            else:
+                # 如果没有 X, Y，只用 I
+                lr_tensor = I_tensor
+        else:
+            # 原来的单通道模式
+            lr_array = np.asarray(f[self._lr_paths[idx]])
+            lr_tensor = self._normalize(lr_array, transpose=self.transpose_lr)
+        
+        # 处理 HR 数据（保持原样）
+        hr_array = np.asarray(f[self._hr_paths[idx]])
+        hr_tensor = self._normalize(hr_array, transpose=self.transpose_hr)
+
+        return lr_tensor, hr_tensor, sample_name
+
+    def close(self):
         if self._file is not None:
             self._file.close()
             self._file = None
@@ -215,308 +233,43 @@ class PairedH5Dataset(Dataset):
     def __del__(self):
         self.close()
 
-    def _ensure_file(self) -> h5py.File:
-        if self._file is None:
-            self._file = h5py.File(self.h5_path, "r")
-        return self._file
 
-    @staticmethod
-    def _resolve_root(file: h5py.File, key: str) -> Union[h5py.Group, h5py.Dataset]:
-        if key not in file:
-            available = ", ".join(sorted(file.keys()))
-            raise KeyError(f"HDF5 文件中不存在键 '{key}'，可用键包括：{available}")
-        return file[key]
-
-    @staticmethod
-    def _list_members(node: Union[h5py.Group, h5py.Dataset]) -> List[str]:
-        if isinstance(node, h5py.Dataset):
-            return []
-        return sorted(name for name in node.keys())
-
-    def _ensure_structure(self) -> None:
-        file = self._ensure_file()
-        if self._sample_names is not None:
-            return
-
-        lr_root = self._resolve_root(file, self.lr_key)
-        hr_root = self._resolve_root(file, self.hr_key)
-
-        if isinstance(lr_root, h5py.Dataset) and isinstance(hr_root, h5py.Dataset):
-            length = lr_root.shape[0]
-            if hr_root.shape[0] != length:
-                raise ValueError("LR 和 HR 数据集长度不一致。")
-            self._flat_mode = True
-            self._flat_length = int(length)
-            self._lr_flat_path = lr_root.name
-            self._hr_flat_path = hr_root.name
-            self._sample_names = [f"{idx:06d}" for idx in range(length)]
-            return
-
-        if not isinstance(lr_root, h5py.Group) or not isinstance(hr_root, h5py.Group):
-            raise TypeError("当使用嵌套结构时，lr_key 和 hr_key 必须指向分组。")
-
-        lr_members = self._list_members(lr_root)
-        hr_members = self._list_members(hr_root)
-        shared = sorted(set(lr_members) & set(hr_members))
-        if not shared:
-            raise ValueError("在 LR 和 HR 分组下没有找到共同的样本编号。")
-
-        lr_paths: List[str] = []
-        hr_paths: List[str] = []
-        for name in shared:
-            lr_paths.append(
-                self._dataset_path_for_sample(
-                    lr_root[name], self.lr_dataset_name, "LR", name
-                )
-            )
-            hr_paths.append(
-                self._dataset_path_for_sample(
-                    hr_root[name], self.hr_dataset_name, "HR", name
-                )
-            )
-        self._sample_names = shared
-        self._lr_dataset_paths = lr_paths
-        self._hr_dataset_paths = hr_paths
-
-    @staticmethod
-    def _dataset_path_for_sample(
-        node: Union[h5py.Group, h5py.Dataset],
-        dataset_name: Optional[str],
-        role: str,
-        sample_name: str,
-    ) -> str:
-        if isinstance(node, h5py.Dataset):
-            return node.name
-        if dataset_name:
-            if dataset_name not in node:
-                available = ", ".join(sorted(node.keys()))
-                raise KeyError(
-                    f"{role} 样本 '{sample_name}' 下找不到数据集 '{dataset_name}'，可用成员：{available}"
-                )
-            dataset = node[dataset_name]
-            if not isinstance(dataset, h5py.Dataset):
-                raise TypeError(f"{role} 样本 '{sample_name}' 中 '{dataset_name}' 不是 dataset。")
-            return dataset.name
-
-        dataset_candidates: List[str] = []
-        for child in node.values():
-            if isinstance(child, h5py.Dataset):
-                dataset_candidates.append(child.name)
-        if len(dataset_candidates) == 1:
-            return dataset_candidates[0]
-        if not dataset_candidates:
-            raise TypeError(f"{role} 样本 '{sample_name}' 下没有 dataset。")
-        available = ", ".join(sorted(dataset_candidates))
-        raise TypeError(
-            f"{role} 样本 '{sample_name}' 下有多个 dataset ({available})，"
-            f"请在配置中指定 {role.lower()}_dataset_name。"
-        )
-
-    @staticmethod
-    def _ensure_chw(array: np.ndarray) -> np.ndarray:
-        if array.ndim == 2:
-            return array[None, ...]
-        if array.ndim == 3:
-            if array.shape[0] in (1, 3):
-                return array
-            if array.shape[-1] in (1, 3):
-                return np.moveaxis(array, -1, 0)
-        raise ValueError(f"Unsupported array shape {array.shape}, expected HxW or CxHxW.")
-
-    def _array_to_tensor(self, array: np.ndarray) -> torch.Tensor:
-        """Map numpy array to tensor in [0, 1] using its own min/max."""
-        tensor = torch.from_numpy(self._ensure_chw(array)).float()
-        t_min = tensor.amin()
-        t_max = tensor.amax()
-        if torch.isclose(t_max, t_min):
-            tensor = torch.zeros_like(tensor)
-        else:
-            tensor = (tensor - t_min) / (t_max - t_min)
-        return tensor
-
-
-    def __len__(self) -> int:
-        self._ensure_structure()
-        if self._flat_mode:
-            return self._flat_length
-        assert self._sample_names is not None
-        return len(self._sample_names)
-
-    def __getitem__(self, idx: int):
-        self._ensure_structure()
-        file = self._ensure_file()
-
-        if self._flat_mode:
-            assert self._lr_flat_path and self._hr_flat_path
-            lr_array = np.asarray(file[self._lr_flat_path][idx])
-            hr_array = np.asarray(file[self._hr_flat_path][idx])
-            sample_name = f"{idx:06d}"
-        else:
-            assert (
-                self._sample_names is not None
-                and self._lr_dataset_paths is not None
-                and self._hr_dataset_paths is not None
-            )
-            sample_name = self._sample_names[idx]
-            lr_path = self._lr_dataset_paths[idx]
-            hr_path = self._hr_dataset_paths[idx]
-            lr_array = np.asarray(file[lr_path])
-            hr_array = np.asarray(file[hr_path])
-
-        lr_array = self._maybe_transpose(lr_array, self.transpose_lr)
-        hr_array = self._maybe_transpose(hr_array, self.transpose_hr)
-
-        lr_tensor = self._array_to_tensor(lr_array)  # LR 应用 value_range
-        hr_tensor = self._array_to_tensor(hr_array)  # HR 直接转换
-
-        if self.transform:
-            lr_tensor, hr_tensor = self.transform(lr_tensor, hr_tensor)
-
-        return lr_tensor, hr_tensor, sample_name
-
-    @staticmethod
-    def _maybe_transpose(array: np.ndarray, flag: bool) -> np.ndarray:
-        if not flag:
-            return array
-        if array.ndim == 2:
-            return array.T
-        if array.ndim == 3:
-            return np.swapaxes(array, -1, -2)
-        raise ValueError("Only 2D or 3D arrays can be transposed automatically.")
-
-
-def download_dataset():
-    mnist = torchvision.datasets.MNIST(root="./data/mnist", download=True)
-    print("length of MNIST", len(mnist))
-    idx = 4
-    img, label = mnist[idx]
-    print(img)
-    print(label)
-    Path("work_dirs").mkdir(parents=True, exist_ok=True)
-    img.save("work_dirs/tmp.jpg")
-    tensor = ToTensor()(img)
-    print(tensor.shape)
-    print(tensor.max())
-    print(tensor.min())
-
-
-def get_dataloader(batch_size: int):
-    transform = Compose([ToTensor(), Lambda(lambda x: (x - 0.5) * 2)])
-    dataset = torchvision.datasets.MNIST(root="./data/mnist", transform=transform)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-
-IMAGE_ROOT = "D:/deep_learning/DDPM/butterfly_images_for_training"
-IMAGE_SIZE = 400
-CHANNELS = 1
-
-
-def set_image_shape(image_size: int, channels: int) -> None:
-    global IMAGE_SIZE, CHANNELS
-    IMAGE_SIZE = image_size
-    CHANNELS = channels
-
-
-def _build_transform(image_size=IMAGE_SIZE, channels=CHANNELS, augment=False):
-    color_tf = Identity() if channels == 1 else ConvertToRGB()
-    base_transforms = [
-        color_tf,
-        T.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
-        T.CenterCrop(image_size),
-    ]
-
-    if augment:
-        base_transforms.extend([
-            T.RandomHorizontalFlip(0.5),
-            T.RandomAffine(
-                degrees=0,
-                translate=(0.05, 0.05),
-                fill=0,
-            ),
-        ])
-
-    base_transforms.extend([
-        T.ToTensor(),
-        T.Normalize(mean=[0.5] * channels, std=[0.5] * channels),
-    ])
-
-    return T.Compose(base_transforms)
-
-
-def get_dataloader1(batch_size: int,
-                    root: str = IMAGE_ROOT,
-                    image_size: int = IMAGE_SIZE,
-                    channels: int = CHANNELS,
-                    num_workers: int = 16):
-    set_image_shape(image_size, channels)
-    transform = _build_transform(image_size, channels)
-    dataset = torchvision.datasets.ImageFolder(root=root, transform=transform)
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=4 if num_workers > 0 else 2,
-    )
-
-
-def get_paired_dataloader(
+def get_h5_dataloader(
+    h5_path: str,
     batch_size: int,
-    lr_root: Optional[str] = None,
-    hr_root: Optional[str] = None,
-    image_size: int = IMAGE_SIZE,
-    channels: int = CHANNELS,
-    num_workers: int = 16,
-    augment: bool = False,
-    h5_path: Optional[str] = None,
-    h5_lr_key: str = "lr",
-    h5_hr_key: str = "hr",
-    h5_lr_dataset: Optional[str] = None,
-    h5_hr_dataset: Optional[str] = None,
-    value_range: Optional[Tuple[float, float]] = None,
+    lr_key: str = "TFM",
+    hr_key: str = "hr",
+    lr_dataset_name: Optional[str] = None,
+    hr_dataset_name: Optional[str] = None,
     transpose_lr: bool = False,
     transpose_hr: bool = False,
-):
-    set_image_shape(image_size, channels)
-    transform = PairedTransform(image_size, channels, augment=augment)
-
-    if h5_path:
-        dataset = PairedH5Dataset(
-            h5_path=h5_path,
-            lr_key=h5_lr_key,
-            hr_key=h5_hr_key,
-            transform=transform,
-            value_range=value_range,
-            lr_dataset_name=h5_lr_dataset,
-            hr_dataset_name=h5_hr_dataset,
-            transpose_lr=transpose_lr,
-            transpose_hr=transpose_hr,
-        )
-    else:
-        if lr_root is None or hr_root is None:
-            raise ValueError("lr_root and hr_root must be provided when h5_path is not set.")
-        dataset = PairedImageDataset(
-            lr_dir=lr_root,
-            hr_dir=hr_root,
-            transform=transform,
-        )
+    use_tfm_channels: bool = False,
+    coord_range: Optional[tuple] = None,
+    num_workers: int = 4,
+    shuffle: bool = True,
+) -> DataLoader:
+    """创建 HDF5 数据集的 DataLoader
+    
+    Args:
+        use_tfm_channels: 是否使用 TFM 的 I, X, Y 三通道模式
+        coord_range: X, Y 坐标的归一化范围，默认 (-1, 1)
+    """
+    dataset = H5PairedDataset(
+        h5_path=h5_path,
+        lr_key=lr_key,
+        hr_key=hr_key,
+        lr_dataset_name=lr_dataset_name,
+        hr_dataset_name=hr_dataset_name,
+        transpose_lr=transpose_lr,
+        transpose_hr=transpose_hr,
+        use_tfm_channels=use_tfm_channels,
+        coord_range=coord_range,
+    )
 
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=(num_workers > 0),
-        prefetch_factor=4 if num_workers > 0 else 2,
     )
-
-
-def get_img_shape():
-    return CHANNELS, IMAGE_SIZE, IMAGE_SIZE
-
-
-if __name__ == "__main__":
-    download_dataset()
