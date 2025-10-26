@@ -9,13 +9,16 @@
     "h5_path": "./data/train.h5",
     "h5_lr_key": "TFM",
     "h5_hr_key": "hr",
-    "augment": false,
     "h5_lr_dataset": "intensity",
     "transpose_lr": true,
     "transpose_hr": true,
     "use_tfm_channels": false,
     "coord_range_x": [-0.0105, 0.0105],
-    "coord_range_y": [0.0025, 0.0375]
+    "coord_range_y": [0.0025, 0.0375],
+    "augment": false,
+    "h_flip_prob": 0.5,
+    "translate_prob": 0.5,
+    "max_translate_ratio": 0.05
   },
   "model": {
     "module": "network",

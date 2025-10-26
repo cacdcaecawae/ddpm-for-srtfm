@@ -220,8 +220,12 @@ def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
         transpose_hr=data_cfg.get("transpose_hr", False),
         use_tfm_channels=data_cfg.get("use_tfm_channels", False),
         coord_range=coord_range,
+        augment=data_cfg.get("augment", False),
+        h_flip_prob=data_cfg.get("h_flip_prob", 0.5),
+        translate_prob=data_cfg.get("translate_prob", 0.5),
+        max_translate_ratio=data_cfg.get("max_translate_ratio", 0.05),
         num_workers=data_cfg.get("num_workers", 4),
-        shuffle=data_cfg.get("augment", True),
+        shuffle=True,
     )
 
 

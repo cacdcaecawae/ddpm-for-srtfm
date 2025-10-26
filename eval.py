@@ -78,6 +78,10 @@ def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
         transpose_hr=cfg.get("transpose_hr", False),
         use_tfm_channels=cfg.get("use_tfm_channels", False),
         coord_range=coord_range,
+        augment=cfg.get("augment", False),  # 评估时默认不增强
+        h_flip_prob=cfg.get("h_flip_prob", 0.0),
+        translate_prob=cfg.get("translate_prob", 0.0),
+        max_translate_ratio=cfg.get("max_translate_ratio", 0.0),
         num_workers=cfg.get("num_workers", 4),
         shuffle=False,  # 评估时不打乱
     )
@@ -242,8 +246,13 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                     "ssim": ssim.item(),
                 })
                 if cfg["output"].get("save_images", True):
+                    # 确保文件名有扩展名
+                    if not any(name.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff']):
+                        image_filename = f"{name}.png"
+                    else:
+                        image_filename = name
                     tensor_to_image(sr_for_image[idx],
-                                    apply_jet=use_jet).save(images_dir / name)
+                                    apply_jet=use_jet).save(images_dir / image_filename)
 
     avg_psnr = float(np.mean(psnr_scores)) if psnr_scores else 0.0
     avg_ssim = float(np.mean(ssim_scores)) if ssim_scores else 0.0

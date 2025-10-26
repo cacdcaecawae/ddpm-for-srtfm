@@ -3,6 +3,7 @@ from typing import List, Optional
 import h5py
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -32,7 +33,11 @@ class H5PairedDataset(Dataset):
         transpose_lr: bool = False,
         transpose_hr: bool = False,
         use_tfm_channels: bool = False,  # 是否使用 I, X, Y 三通道
-        coord_range: Optional[tuple] = None,  # X, Y 坐标的归一化范围 (min, max)
+        coord_range: Optional[tuple] = None,  # X, Y 坐标的归一化范围 ((x_min, x_max), (y_min, y_max))
+        augment: bool = False,  # 是否启用数据增强
+        h_flip_prob: float = 0.5,  # 水平翻转概率
+        translate_prob: float = 0.5,  # 平移概率
+        max_translate_ratio: float = 0.05,  # 最大平移比例
     ):
         self.h5_path = h5_path
         self.lr_key = lr_key
@@ -42,7 +47,13 @@ class H5PairedDataset(Dataset):
         self.transpose_lr = transpose_lr
         self.transpose_hr = transpose_hr
         self.use_tfm_channels = use_tfm_channels
-        self.coord_range = coord_range if coord_range else (-1.0, 1.0)  # 默认 [-1, 1]
+        self.coord_range = coord_range if coord_range else ((-1.0, 1.0), (-1.0, 1.0))  # 默认 X, Y 都是 [-1, 1]
+        
+        # 数据增强参数
+        self.augment = augment
+        self.h_flip_prob = h_flip_prob
+        self.translate_prob = translate_prob
+        self.max_translate_ratio = max_translate_ratio
 
         self._file: Optional[h5py.File] = None
         self._sample_names: Optional[List[str]] = None
@@ -173,6 +184,210 @@ class H5PairedDataset(Dataset):
         tensor = tensor * 2.0 - 1.0  # → [-1, 1]
         
         return tensor
+    
+    def _apply_augmentation(
+        self,
+        lr_tensor: torch.Tensor,
+        hr_tensor: torch.Tensor
+    ) -> tuple:
+        """
+        应用数据增强
+        
+        Args:
+            lr_tensor: [C, H, W] - TFM模式下 C=3 (I,X,Y)，单通道模式 C=1
+            hr_tensor: [1, H, W]
+        
+        Returns:
+            增强后的 (lr_tensor, hr_tensor)
+        """
+        if not self.augment:
+            return lr_tensor, hr_tensor
+        
+        if self.use_tfm_channels and lr_tensor.shape[0] == 3:
+            # TFM 三通道模式：特殊处理
+            return self._augment_tfm(lr_tensor, hr_tensor)
+        else:
+            # 单通道模式：标准处理
+            return self._augment_standard(lr_tensor, hr_tensor)
+    
+    def _augment_standard(
+        self,
+        lr_tensor: torch.Tensor,
+        hr_tensor: torch.Tensor
+    ) -> tuple:
+        """标准单通道数据增强"""
+        # 水平翻转
+        if torch.rand(1).item() < self.h_flip_prob:
+            lr_tensor = torch.flip(lr_tensor, dims=[-1])
+            hr_tensor = torch.flip(hr_tensor, dims=[-1])
+        
+        # 平移
+        if torch.rand(1).item() < self.translate_prob:
+            lr_tensor, hr_tensor = self._apply_translation(lr_tensor, hr_tensor)
+        
+        return lr_tensor, hr_tensor
+    
+    def _augment_tfm(
+        self,
+        lr_tensor: torch.Tensor,
+        hr_tensor: torch.Tensor
+    ) -> tuple:
+        """TFM 三通道特殊增强"""
+        I_channel = lr_tensor[0:1]  # [1, H, W]
+        X_channel = lr_tensor[1:2]  # [1, H, W]
+        Y_channel = lr_tensor[2:3]  # [1, H, W]
+        
+        # 水平翻转：X 坐标需要取反
+        if torch.rand(1).item() < self.h_flip_prob:
+            # 关键：先取反 X 坐标，再进行空间翻转
+            X_channel = -X_channel
+            
+            I_channel = torch.flip(I_channel, dims=[-1])
+            X_channel = torch.flip(X_channel, dims=[-1])
+            Y_channel = torch.flip(Y_channel, dims=[-1])
+            hr_tensor = torch.flip(hr_tensor, dims=[-1])
+        
+        # 平移：坐标值需要同步调整
+        if torch.rand(1).item() < self.translate_prob:
+            I_channel, X_channel, Y_channel, hr_tensor = self._apply_tfm_translation(
+                I_channel, X_channel, Y_channel, hr_tensor
+            )
+        
+        # 重新拼接
+        lr_tensor = torch.cat([I_channel, X_channel, Y_channel], dim=0)
+        
+        return lr_tensor, hr_tensor
+    
+    def _apply_translation(
+        self,
+        lr_tensor: torch.Tensor,
+        hr_tensor: torch.Tensor
+    ) -> tuple:
+        """应用平移变换（使用边界复制填充）"""
+        _, H, W = lr_tensor.shape
+        
+        # 随机平移量（像素）
+        max_tx = int(W * self.max_translate_ratio)
+        max_ty = int(H * self.max_translate_ratio)
+        
+        tx = torch.randint(-max_tx, max_tx + 1, (1,)).item()
+        ty = torch.randint(-max_ty, max_ty + 1, (1,)).item()
+        
+        if tx == 0 and ty == 0:
+            return lr_tensor, hr_tensor
+        
+        # 应用平移
+        lr_tensor = self._translate_tensor(lr_tensor, tx, ty)
+        hr_tensor = self._translate_tensor(hr_tensor, tx, ty)
+        
+        return lr_tensor, hr_tensor
+    
+    def _apply_tfm_translation(
+        self,
+        I_channel: torch.Tensor,
+        X_channel: torch.Tensor,
+        Y_channel: torch.Tensor,
+        hr_tensor: torch.Tensor
+    ) -> tuple:
+        """TFM 三通道平移（强度做空间平移,坐标直接平移数值）"""
+        _, H, W = I_channel.shape
+        
+        # 随机平移量（像素）
+        max_tx = int(W * self.max_translate_ratio)
+        max_ty = int(H * self.max_translate_ratio)
+        
+        tx = torch.randint(-max_tx, max_tx + 1, (1,)).item()
+        ty = torch.randint(-max_ty, max_ty + 1, (1,)).item()
+        
+        if tx == 0 and ty == 0:
+            return I_channel, X_channel, Y_channel, hr_tensor
+        
+        # 1. 对强度通道(I)和HR图像应用空间平移
+        I_channel = self._translate_tensor(I_channel, tx, ty)
+        hr_tensor = self._translate_tensor(hr_tensor, tx, ty)
+        
+        # 2. X/Y坐标通道:不做空间平移,只调整坐标值
+        # 
+        # 物理模型:
+        # - 图像实际物理大小: 5mm × 5mm
+        # - 图像像素: H×W (例如 101×101)
+        # - 像素间隔数: (H-1) × (W-1) = 100 × 100
+        # - 每个间隔物理大小: 5/(H-1) mm × 5/(W-1) mm
+        # - X坐标总范围: x_max - x_min (例如 0.021mm)
+        # - Y坐标总范围: y_max - y_min (例如 0.035mm)
+        # - X/Y已经归一化到 [-1, 1]
+        #
+        # 平移1个像素时,归一化坐标的变化:
+        # - 物理平移: 5/(W-1) mm
+        # - 占总范围的比例: [5/(W-1)] / (x_max-x_min)
+        # - 归一化坐标变化: 比例 × 2.0 (因为归一化范围是2,从-1到1)
+        # - 所以: dx_norm = [5/(W-1)] / (x_max-x_min) × 2.0
+        
+        (x_min, x_max), (y_min, y_max) = self.coord_range
+        
+        # 图像实际物理大小 (单位与坐标范围一致)
+        physical_size = 0.005  # 5mm = 0.005m (假设坐标单位是m)
+        
+        # 每像素的归一化坐标变化量
+        # 归一化范围是 2.0 (从-1到1)
+        coord_per_pixel_x = (physical_size / (W - 1)) / (x_max - x_min) * 2.0
+        coord_per_pixel_y = (physical_size / (H - 1)) / (y_max - y_min) * 2.0
+        
+        # 坐标偏移量(归一化坐标)
+        dx_coord = tx * coord_per_pixel_x
+        dy_coord = ty * coord_per_pixel_y
+        
+        # 直接给所有坐标值加上偏移量(不做空间平移)
+        # 平移后坐标范围会略微超出[-1, 1],这是正常的
+        X_channel = X_channel + dx_coord
+        Y_channel = Y_channel + dy_coord
+        
+        # 不裁剪坐标范围,允许平移后范围改变
+        
+        return I_channel, X_channel, Y_channel, hr_tensor
+    
+    @staticmethod
+    def _translate_tensor(
+        tensor: torch.Tensor,
+        tx: int,
+        ty: int
+    ) -> torch.Tensor:
+        """
+        平移张量（使用边界复制填充）
+        
+        Args:
+            tensor: [C, H, W]
+            tx: 水平平移（像素，正数向右）
+            ty: 垂直平移（像素，正数向下）
+        
+        Returns:
+            平移后的张量
+        """
+        C, H, W = tensor.shape
+        
+        # 构建仿射变换矩阵
+        # PyTorch 的 grid_sample 使用归一化坐标 [-1, 1]
+        # 平移量需要转换为归一化坐标
+        theta = torch.tensor([
+            [1, 0, 2.0 * tx / W],
+            [0, 1, 2.0 * ty / H]
+        ], dtype=tensor.dtype, device=tensor.device).unsqueeze(0)  # [1, 2, 3]
+        
+        # 生成采样网格
+        grid = F.affine_grid(theta, [1, C, H, W], align_corners=False)
+        
+        # 应用变换（使用边界复制填充）
+        tensor = tensor.unsqueeze(0)  # [1, C, H, W]
+        tensor = F.grid_sample(
+            tensor,
+            grid,
+            mode='bilinear',
+            padding_mode='border',  # 关键：使用边界复制而非零填充
+            align_corners=False
+        )
+        tensor = tensor.squeeze(0)  # [C, H, W]
+        
+        return tensor
 
     def __len__(self) -> int:
         self._init_structure()
@@ -189,8 +404,15 @@ class H5PairedDataset(Dataset):
             # 读取 I, X, Y 三个数据集
             lr_group = f[self._lr_paths[idx]].parent  # 获取父分组
             
-            # 读取三个通道
-            I_array = np.asarray(lr_group['I']) if 'I' in lr_group else np.asarray(f[self._lr_paths[idx]])
+            # 读取三个通道（支持 'I' 或 'intensity'）
+            I_array = None
+            if 'I' in lr_group:
+                I_array = np.asarray(lr_group['I'])
+            elif 'intensity' in lr_group:
+                I_array = np.asarray(lr_group['intensity'])
+            else:
+                I_array = np.asarray(f[self._lr_paths[idx]])
+            
             X_array = np.asarray(lr_group['X']) if 'X' in lr_group else None
             Y_array = np.asarray(lr_group['Y']) if 'Y' in lr_group else None
             
@@ -223,6 +445,9 @@ class H5PairedDataset(Dataset):
         hr_array = np.asarray(f[self._hr_paths[idx]])
         hr_tensor = self._normalize(hr_array, transpose=self.transpose_hr)
 
+        # 应用数据增强
+        lr_tensor, hr_tensor = self._apply_augmentation(lr_tensor, hr_tensor)
+
         return lr_tensor, hr_tensor, sample_name
 
     def close(self):
@@ -247,12 +472,20 @@ def get_h5_dataloader(
     coord_range: Optional[tuple] = None,
     num_workers: int = 4,
     shuffle: bool = True,
+    augment: bool = False,  # 是否启用数据增强
+    h_flip_prob: float = 0.5,  # 水平翻转概率
+    translate_prob: float = 0.5,  # 平移概率
+    max_translate_ratio: float = 0.05,  # 最大平移比例
 ) -> DataLoader:
     """创建 HDF5 数据集的 DataLoader
     
     Args:
         use_tfm_channels: 是否使用 TFM 的 I, X, Y 三通道模式
-        coord_range: X, Y 坐标的归一化范围，默认 (-1, 1)
+        coord_range: X, Y 坐标的归一化范围，格式为 ((x_min, x_max), (y_min, y_max))
+        augment: 是否启用数据增强
+        h_flip_prob: 水平翻转概率
+        translate_prob: 平移概率
+        max_translate_ratio: 最大平移比例（相对于图像大小）
     """
     dataset = H5PairedDataset(
         h5_path=h5_path,
@@ -264,6 +497,10 @@ def get_h5_dataloader(
         transpose_hr=transpose_hr,
         use_tfm_channels=use_tfm_channels,
         coord_range=coord_range,
+        augment=augment,
+        h_flip_prob=h_flip_prob,
+        translate_prob=translate_prob,
+        max_translate_ratio=max_translate_ratio,
     )
 
     return DataLoader(
