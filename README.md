@@ -1,6 +1,6 @@
 # ddpm-sr-for-TFM
 
-本项目实现了基于扩散模型的透射场无损检测超分辨率（TFM SR）流程，涵盖数据生成、条件扩散网络训练与评估脚本，全部模块均在仓库内实现。
+本项目实现了基于扩散模型的超声波全聚焦成像超分辨（TFM SR）流程，涵盖数据生成、条件扩散网络训练与评估脚本，全部模块均在仓库内实现。
 
 <div align="center">
   <table>
@@ -71,7 +71,7 @@
 - 推荐配合 DeepWiki 学习扩散/反演相关知识：  
   - DeepWiki 主页：<https://deepwiki.org/>（可直接粘贴仓库地址，例如 `https://github.com/cacdcaecawae/ddpm-for-srtfm/tree/hdf5`）。  
   - DeepWiki 使用介绍：<https://zhuanlan.zhihu.com/p/1900126204851381576>。
-- 提交前建议执行 `pytest`（位于 `tests/`），并将实验配置、指标记录在 [docs/experiments.md](docs/experiments.md)；常见问题可参考 [docs/faq.md](docs/faq.md)。
+- 提交前建议执行 `pytest`（位于 `tests/`），并将实验配置、指标记录在 [实验记录与结果](docs/experiments.md)；常见问题可参考 [常见问题](docs/faq.md)。
 - 教程 Notebook：  
   - [docs/tutorials/quickstart.ipynb](docs/tutorials/quickstart.ipynb)：验证环境、读取配置并生成训练/评估命令。  
   - [docs/tutorials/advanced_training.ipynb](docs/tutorials/advanced_training.ipynb)：分块讲解 `SR_train.py`，配合示例代码剖析训练流程。  
