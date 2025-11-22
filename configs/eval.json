@@ -1,18 +1,29 @@
 {
   "device": "cuda",
   "data": {
-    "lr_root": "./data/data_focus/eval/TFM",
-    "hr_root": "./data/data_focus/eval/hr",
     "batch_size": 1,
     "num_workers": 4,
     "image_size": 101,
-    "channels": 1
+    "channels": 1,
+    "h5_path": "./data/eval.h5",
+    "h5_lr_key": "TFM",
+    "h5_hr_key": "hr",
+    "h5_lr_dataset": "intensity",
+    "transpose_lr": true,
+    "transpose_hr": true,
+    "use_tfm_channels": false,
+    "coord_range_x": [-0.0105, 0.0105],
+    "coord_range_y": [0.0025, 0.0375],
+    "augment": true,
+    "h_flip_prob": 1.0,
+    "translate_prob": 0.05,
+    "max_translate_ratio": 0.05
   },
   "model": {
     "module": "network",
     "backbone": "unet_res",
-    "diffusion_steps": 1000,  
-    "checkpoint_path": "./SR/autodl_weight/model1020focus-1.pth"
+    "diffusion_steps": 1000,
+    "checkpoint_path": "./SR/autodl_weight/model027t-500.pth"
   },
   "vae": {
     "enabled": false,
@@ -23,12 +34,12 @@
   "sampler": {
     "threshold": 0.05,
     "type": "ddim",
-    "ddim_steps": 50,
+    "ddim_steps": 20,
     "eta": 1.0,
     "simple_var": false
   },
   "output": {
-    "root": "SR/eval_results_1020focus-1",
+    "root": "SR/eval_results_027t-500",
     "save_images": true
   }
 }

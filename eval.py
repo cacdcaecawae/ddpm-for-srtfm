@@ -13,7 +13,7 @@ from torchmetrics.functional import (peak_signal_noise_ratio,
 
 from matplotlib import cm
 
-from dataset import get_paired_dataloader, set_image_shape
+from dataset import get_h5_dataloader
 from ddpm_simple import DDPM
 from ddim import DDIM
 from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
@@ -60,14 +60,32 @@ def ensure_dir(path: Path) -> None:
 
 
 def create_dataloader(cfg: Dict[str, Any]) -> torch.utils.data.DataLoader:
-    return get_paired_dataloader(
+    # 构建 coord_range 参数
+    coord_range = None
+    if cfg.get("use_tfm_channels", False):
+        coord_range_x = tuple(cfg["coord_range_x"]) if "coord_range_x" in cfg else (-1.0, 1.0)
+        coord_range_y = tuple(cfg["coord_range_y"]) if "coord_range_y" in cfg else (-1.0, 1.0)
+        coord_range = (coord_range_x, coord_range_y)
+    
+    return get_h5_dataloader(
+        h5_path=cfg["h5_path"],
         batch_size=cfg["batch_size"],
-        lr_root=cfg["lr_root"],
-        hr_root=cfg["hr_root"],
-        image_size=cfg["image_size"],
-        channels=cfg["channels"],
+        lr_key=cfg.get("h5_lr_key", "TFM"),
+        hr_key=cfg.get("h5_hr_key", "hr"),
+        lr_dataset_name=cfg.get("h5_lr_dataset"),
+        hr_dataset_name=cfg.get("h5_hr_dataset"),
+        transpose_lr=cfg.get("transpose_lr", False),
+        transpose_hr=cfg.get("transpose_hr", False),
+        use_tfm_channels=cfg.get("use_tfm_channels", False),
+        coord_range=coord_range,
+        augment=cfg.get("augment", False),  # 评估时默认不增强
+        h_flip_prob=cfg.get("h_flip_prob", 0.0),
+        translate_prob=cfg.get("translate_prob", 0.0),
+        max_translate_ratio=cfg.get("max_translate_ratio", 0.0),
         num_workers=cfg.get("num_workers", 4),
+        shuffle=False,  # 评估时不打乱
     )
+
 
 
 def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
@@ -82,7 +100,18 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
                        f"Available: {', '.join(config_map)}")
     net_cfg = config_map[backbone].copy()
     diffusion_steps = cfg["model"]["diffusion_steps"]
-    model = builder(net_cfg, diffusion_steps).to(device)
+    
+    # 获取输入通道数和图像尺寸
+    data_cfg = cfg["data"]
+    in_channels = data_cfg["channels"]  # HR 的通道数
+    image_size = data_cfg["image_size"]
+    
+    # LR 的通道数
+    lr_channels = in_channels
+    if data_cfg.get("use_tfm_channels", False):
+        lr_channels = 3  # TFM 模式: I, X, Y 三通道
+    
+    model = builder(net_cfg, diffusion_steps, in_channels, image_size, lr_channels).to(device)
 
     checkpoint = torch.load(cfg["model"]["checkpoint_path"],
                             map_location=device)
@@ -155,7 +184,6 @@ def tensor_to_image(tensor: torch.Tensor,
 
 def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
     data_cfg = cfg["data"]
-    set_image_shape(data_cfg["image_size"], data_cfg["channels"])
     dataloader = create_dataloader(cfg["data"])
     net = build_model(cfg, device)
     # encoder, decoder = build_vae(cfg, device)
@@ -218,8 +246,13 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                     "ssim": ssim.item(),
                 })
                 if cfg["output"].get("save_images", True):
+                    # 确保文件名有扩展名
+                    if not any(name.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff']):
+                        image_filename = f"{name}.png"
+                    else:
+                        image_filename = name
                     tensor_to_image(sr_for_image[idx],
-                                    apply_jet=use_jet).save(images_dir / name)
+                                    apply_jet=use_jet).save(images_dir / image_filename)
 
     avg_psnr = float(np.mean(psnr_scores)) if psnr_scores else 0.0
     avg_ssim = float(np.mean(ssim_scores)) if ssim_scores else 0.0
@@ -227,11 +260,12 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
     print(f"平均 SSIM: {avg_ssim:.4f}")
 
     results_txt = output_root / "results.txt"
+    data_source = cfg["data"].get("h5_path") or cfg["data"].get("lr_root", "N/A")
     with results_txt.open("w", encoding="utf-8") as handle:
         handle.write("Evaluation Summary\n")
         handle.write("===================\n")
         handle.write(f"Model: {cfg['model']['checkpoint_path']}\n")
-        handle.write(f"Dataset: {cfg['data']['lr_root']}\n")
+        handle.write(f"Dataset: {data_source}\n")
         handle.write(f"Sampler: {sampler_type.upper()}\n")
         handle.write(f"Average PSNR: {avg_psnr:.4f}\n")
         handle.write(f"Average SSIM: {avg_ssim:.4f}\n")
