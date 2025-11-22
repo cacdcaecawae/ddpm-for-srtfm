@@ -128,12 +128,22 @@ def to_jet(x: torch.Tensor,
     x_norm = (x - vmin) / (vmax - vmin)
     x_norm = x_norm.clamp(0, 1)
 
-    lut_np = cm.get_cmap('jet', bins)(np.linspace(0, 1, bins))[:, :3]
+    # 修复 matplotlib 弃用警告
+    try:
+        # matplotlib >= 3.7
+        cmap = cm.get_cmap('jet')
+        lut_np = cmap(np.linspace(0, 1, bins))[:, :3]
+    except AttributeError:
+        # matplotlib < 3.7
+        lut_np = cm.get_cmap('jet', bins)(np.linspace(0, 1, bins))[:, :3]
+    
     lut = torch.from_numpy(lut_np).to(device=device, dtype=torch.float32)
 
-    idx = (x_norm * (bins - 1)).round().long()
-    rgb = lut[idx.squeeze(1)]
-    rgb = rgb.permute(0, 3, 1, 2).contiguous()
+    # 处理单通道: [B, 1, H, W]
+    idx = (x_norm * (bins - 1)).round().long()  # [B, 1, H, W]
+    idx = idx.squeeze(1)  # [B, H, W]
+    rgb = lut[idx]  # [B, H, W, 3]
+    rgb = rgb.permute(0, 3, 1, 2).contiguous()  # [B, 3, H, W]
 
     if squeeze_back:
         rgb = rgb.squeeze(0)
@@ -142,8 +152,20 @@ def to_jet(x: torch.Tensor,
 
 def make_preview_grid(tensor: torch.Tensor, channels: int,
                       nrow: int) -> torch.Tensor:
+    """
+    创建预览网格图像
+    
+    Args:
+        tensor: [B, C, H, W] - C=1 单通道用jet着色, C=3 直接使用
+        channels: 通道数
+        nrow: 网格行数
+    """
     if channels == 1:
+        # 单通道: 转为 RGB jet colormap
         tensor = to_jet(tensor, vmin=0.0, vmax=1.0)
+    elif channels == 3:
+        # 三通道: 只显示第一个通道 (I通道)
+        tensor = to_jet(tensor[:, 0:1], vmin=0.0, vmax=1.0)
     return make_grid(tensor, nrow=nrow)
 
 
@@ -357,11 +379,11 @@ def train(ddpm: DDPM,
             if psnr_scores:
                 mean_psnr = float(sum(psnr_scores) / len(psnr_scores))
 
-            channels = img_shape[0]
             lr01 = ((lr_subset.detach().cpu().clamp(-1, 1) + 1) / 2)
             hr01_display = ((hr_subset.clamp(-1, 1) + 1) / 2)
             net01 = ((img_net.detach().cpu().clamp(-1, 1) + 1) / 2)
             ema01 = ((img_ema.detach().cpu().clamp(-1, 1) + 1) / 2)
+            channels = lr01.shape[1]
             writer.add_image(f'sample/epoch_{epoch + 1}_lr',
                              make_preview_grid(lr01, channels, preview_nrow),
                              epoch + 1)
