@@ -1,0 +1,59 @@
+{
+  "seed": null,
+  "device": "cuda",
+  "data": {
+    "batch_size": 32,
+    "num_workers": 4,
+    "image_size": 101,
+    "channels": 1,
+    "h5_path": "./data/train.h5",
+    "h5_lr_key": "TFM",
+    "h5_hr_key": "hr",
+    "h5_lr_dataset": "intensity",
+    "transpose_lr": true,
+    "transpose_hr": true,
+    "use_tfm_channels": false,
+    "coord_range_x": [-0.0105, 0.0105],
+    "coord_range_y": [0.0025, 0.0375],
+    "augment": false,
+    "h_flip_prob": 0.5,
+    "translate_prob": 0.5,
+    "max_translate_ratio": 0.05
+  },
+  "model": {
+    "module": "network",
+    "backbone": "unet_res",
+    "diffusion_steps": 1000,
+    "checkpoint_dir": "SR/weight_ckpt",
+    "checkpoint_name": "model023.pth"
+  },
+  "optimization": {
+    "epochs": 1000,
+    "ema_decay": 0.99,
+    "learning_rate": 0.0001,
+    "betas": [
+      0.9,
+      0.99
+    ],
+    "weight_decay": 0.01,
+    "warmup_epochs": 100,
+    "lr_min": 1e-06,
+    "lr_max": 0.0005,
+    "amp": true
+  },
+  "logging": {
+    "tensorboard_root": "runs",
+    "experiment_name": "sr-train",
+    "sample_interval": 10,
+    "num_preview_samples": 4,
+    "preview_seed": 1234,
+    "print_model_summary": false,
+    "record_psnr": true,
+    "save_preview_images": false,
+    "preview_dir": "SR/previews"
+  },
+  "sampler": {
+    "type": "ddpm",
+    "simple_var": true
+  }
+}
