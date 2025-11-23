@@ -1,4 +1,3 @@
-import argparse
 import json
 import math
 import os
@@ -15,12 +14,10 @@ from matplotlib import cm
 from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
-from torchmetrics.functional import peak_signal_noise_ratio
 from tqdm import tqdm
 
 from dataset import get_h5_dataloader
 from I2sb.diffusion import Diffusion
-from ddim import DDIM
 from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
                      convnet_small_cfg, unet_1_cfg, unet_res_cfg)
 
@@ -98,7 +95,7 @@ def warmup_cosine(optimizer: torch.optim.Optimizer,
                   lr_max: float = 1e-4,
                   warmup_epoch: int = 10) -> None:
     if current_epoch < warmup_epoch:
-        lr = lr_max * current_epoch / warmup_epoch
+        lr = lr_max * (current_epoch + 1) / warmup_epoch  # 从 lr_max/warmup_epoch 开始
     else:
         lr = lr_min + (lr_max-lr_min)*(1 + math.cos(math.pi * (current_epoch - warmup_epoch) / (max_epoch - warmup_epoch))) / 2
     for param_group in optimizer.param_groups:
@@ -298,11 +295,6 @@ def train(diffusion: Diffusion,
     model_best_state_dict = None
     ema_model_best_state_dict = None
 
-    best_psnr = -float('inf')
-    best_psnr_epoch = -1
-    model_best_state_dict_by_psnr = None
-    ema_model_best_state_dict_by_psnr = None
-
     use_amp = bool(opt_cfg.get("amp", device.type == 'cuda'))
     scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda")
     print(f"Using AMP: {use_amp}")
@@ -360,8 +352,7 @@ def train(diffusion: Diffusion,
             ema_update(ema_net, net, decay=opt_cfg["ema_decay"])
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
-        mean_psnr = None
-        if (epoch + 0) % preview_interval == 0:
+        if epoch % preview_interval == 0:
             net_was_training = net.training
             net.eval()
             ema_net.eval()
@@ -374,20 +365,8 @@ def train(diffusion: Diffusion,
                 net.train()
 
             hr_subset = hr_images[:preview_batch].cpu()
-            sr01 = ((img_ema + 1) / 2).clamp(0, 1)
-            hr01 = ((hr_subset + 1) / 2).clamp(0, 1)
-
-            psnr_scores = []
-            for idx in range(sr01.size(0)):
-                psnr_val = peak_signal_noise_ratio(sr01[idx].unsqueeze(0),
-                                                   hr01[idx].unsqueeze(0),
-                                                   data_range=1.0)
-                psnr_scores.append(psnr_val.item())
-            if psnr_scores:
-                mean_psnr = float(sum(psnr_scores) / len(psnr_scores))
-
             lr01 = ((lr_subset.detach().cpu().clamp(-1, 1) + 1) / 2)
-            hr01_display = ((hr_subset.clamp(-1, 1) + 1) / 2)
+            hr01 = ((hr_subset.clamp(-1, 1) + 1) / 2)
             net01 = ((img_net.detach().cpu().clamp(-1, 1) + 1) / 2)
             ema01 = ((img_ema.detach().cpu().clamp(-1, 1) + 1) / 2)
             channels = lr01.shape[1]
@@ -395,7 +374,7 @@ def train(diffusion: Diffusion,
                              make_preview_grid(lr01, channels, preview_nrow),
                              epoch + 1)
             writer.add_image(f'sample/epoch_{epoch + 1}_hr',
-                             make_preview_grid(hr01_display, channels, preview_nrow),
+                             make_preview_grid(hr01, channels, preview_nrow),
                              epoch + 1)
             writer.add_image(f'sample/epoch_{epoch + 1}_net',
                              make_preview_grid(net01, channels, preview_nrow),
@@ -404,17 +383,8 @@ def train(diffusion: Diffusion,
                              make_preview_grid(ema01, channels, preview_nrow),
                              epoch + 1)
 
-            if mean_psnr is not None and mean_psnr > best_psnr:
-                best_psnr = mean_psnr
-                best_psnr_epoch = epoch + 1
-                model_best_state_dict_by_psnr = deepcopy(net.state_dict())
-                ema_model_best_state_dict_by_psnr = deepcopy(
-                    ema_net.state_dict())
-
         avg_loss = total_loss / len(dataloader.dataset)
         writer.add_scalar('train/loss', avg_loss, epoch + 1)
-        if mean_psnr is not None:
-            writer.add_scalar('val/psnr_mean', mean_psnr, epoch + 1)
 
         toc = time.time()
         print(
@@ -445,16 +415,11 @@ def train(diffusion: Diffusion,
             'ema_decay': opt_cfg["ema_decay"],
             'model_state_dict': net.state_dict(),
             'ema_model_state_dict': ema_net.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
             'best_loss': best_loss,
             'best_loss_epoch': best_loss_epoch,
             'model_best_state_dict': model_best_state_dict,
             'ema_model_best_state_dict': ema_model_best_state_dict,
-            'best_psnr': best_psnr,
-            'best_psnr_epoch': best_psnr_epoch,
-            'model_best_state_dict_by_psnr': model_best_state_dict_by_psnr,
-            'ema_model_best_state_dict_by_psnr':
-            ema_model_best_state_dict_by_psnr,
-            'optimizer_state_dict': optimizer.state_dict(),
         }
         tmp_ckpt = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
         torch.save(ckpt, tmp_ckpt)
@@ -463,54 +428,6 @@ def train(diffusion: Diffusion,
     writer.close()
     print("Done training!")
     return ema_net
-
-
-def sample_imgs(diffusion: DDPM,
-                net: nn.Module,
-                lr_images: torch.Tensor,
-                output_path: Path,
-                device: torch.device,
-                nrow: int,
-                cfg: Dict[str, Any],
-                simple_var: bool = True) -> None:
-    net = net.to(device).eval()
-    with torch.no_grad():
-        img_shape = get_image_shape_from_config(cfg)
-        shape = (lr_images.size(0), *img_shape)
-        samples = diffusion.sample_backward_sr(shape,
-                                          net,
-                                          lr_images.to(device),
-                                          device=device,
-                                          simple_var=simple_var).cpu()
-        samples = ((samples + 1) / 2).clamp(0, 1)
-    grid = make_preview_grid(samples, img_shape[0], nrow)
-    save_grid_image(grid, output_path)
-
-
-def sample_imgs_ddim(ddim: DDIM,
-                     net: nn.Module,
-                     lr_images: torch.Tensor,
-                     output_path: Path,
-                     device: torch.device,
-                     nrow: int,
-                     cfg: Dict[str, Any],
-                     ddim_step: int = 50,
-                     eta: float = 0.0,
-                     simple_var: bool = True) -> None:
-    net = net.to(device).eval()
-    with torch.no_grad():
-        img_shape = get_image_shape_from_config(cfg)
-        shape = (lr_images.size(0), *img_shape)
-        samples = ddim.sample_backward_sr(shape,
-                                          net,
-                                          lr_images.to(device),
-                                          device=device,
-                                          simple_var=simple_var,
-                                          ddim_step=ddim_step,
-                                          eta=eta).cpu()
-        samples = ((samples + 1) / 2).clamp(0, 1)
-    grid = make_preview_grid(samples, img_shape[0], nrow)
-    save_grid_image(grid, output_path)
 
 
 def collect_preview_batch(cfg: Dict[str, Any],
@@ -523,34 +440,6 @@ def collect_preview_batch(cfg: Dict[str, Any],
     return lr_images, hr_images
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train SR diffusion model.")
-    parser.add_argument("--config",
-                        type=Path,
-                        default=DEFAULT_CONFIG_PATH,
-                        help="Path to training configuration JSON file.")
-    parser.add_argument("--mode",
-                        choices=["train", "sample"],
-                        default="train",
-                        help="Run training or sampling only.")
-    parser.add_argument("--sampler",
-                        choices=["diffusion", "ddim"],
-                        default=None,
-                        help="Sampler to use in sample mode.")
-    parser.add_argument("--checkpoint",
-                        type=Path,
-                        default=None,
-                        help="Override checkpoint path when sampling.")
-    parser.add_argument("--ddim-steps",
-                        type=int,
-                        default=None,
-                        help="DDIM steps when sampling.")
-    parser.add_argument("--eta",
-                        type=float,
-                        default=None,
-                        help="DDIM ETA when sampling.")
-    return parser.parse_args()
-
 def make_beta_schedule(n_timestep=1000, linear_start=1e-4, linear_end=2e-2):
     # return np.linspace(linear_start, linear_end, n_timestep)
     betas = (
@@ -559,8 +448,7 @@ def make_beta_schedule(n_timestep=1000, linear_start=1e-4, linear_end=2e-2):
     return betas.numpy()
 
 def main() -> None:
-    args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(DEFAULT_CONFIG_PATH)
     seed = cfg.get("seed", 42)
     if seed is not None:
         set_seed(seed)
@@ -575,8 +463,15 @@ def main() -> None:
 
     n_steps = cfg["model"]["diffusion_steps"]
 
+    # 对称 beta 调度（I2SB 桥接）
     betas = make_beta_schedule(n_timestep=n_steps, linear_end=3e-4)
-    betas = np.concatenate([betas[:n_steps//2], np.flip(betas[:n_steps//2])])
+    half = n_steps // 2
+    if n_steps % 2 == 1:
+        # 奇数步数：中间点重复一次
+        betas = np.concatenate([betas[:half], [betas[half]], np.flip(betas[:half])])
+    else:
+        # 偶数步数：直接镜像
+        betas = np.concatenate([betas[:half], np.flip(betas[:half])])
     diffusion = Diffusion(betas, device)
 
     ckpt_dir = Path(cfg["model"]["checkpoint_dir"])

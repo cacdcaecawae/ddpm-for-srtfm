@@ -25,7 +25,7 @@
     "backbone": "unet_res",
     "diffusion_steps": 1000,
     "checkpoint_dir": "SR/weight_ckpt",
-    "checkpoint_name": "model023.pth"
+    "checkpoint_name": "I2sb1124.pth"
   },
   "optimization": {
     "epochs": 1000,
@@ -43,17 +43,8 @@
   },
   "logging": {
     "tensorboard_root": "runs",
-    "experiment_name": "sr-train",
+    "experiment_name": "i2sb-train",
     "sample_interval": 10,
-    "num_preview_samples": 4,
-    "preview_seed": 1234,
-    "print_model_summary": false,
-    "record_psnr": true,
-    "save_preview_images": false,
-    "preview_dir": "SR/previews"
-  },
-  "sampler": {
-    "type": "ddpm",
-    "simple_var": true
+    "num_preview_samples": 4
   }
 }
