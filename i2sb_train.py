@@ -14,10 +14,10 @@ from matplotlib import cm
 from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
-from tqdm import tqdm
 
 from dataset import get_h5_dataloader
 from I2sb.diffusion import Diffusion
+from logger import Logger
 from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
                      convnet_small_cfg, unet_1_cfg, unet_res_cfg)
 
@@ -207,6 +207,7 @@ def maybe_load_checkpoint(net: nn.Module, cfg: Dict[str, Any],
     state_dict = checkpoint.get("ema_model_state_dict",
                                 checkpoint.get("model_state_dict", checkpoint))
     net.load_state_dict(state_dict)
+    # 注意：这里不使用 log，因为这个函数可能在 log 初始化前调用
     print(f"Loaded weights from {resume_path}")
 
 
@@ -269,14 +270,15 @@ def train(diffusion: Diffusion,
           device: torch.device,
           ckpt_path: Path,
           log_dir: Path,
-          n_steps: int) -> nn.Module:
+          n_steps: int,
+          log: Logger) -> nn.Module:
     data_cfg = cfg["data"]
     opt_cfg = cfg["optimization"]
     logging_cfg = cfg["logging"]
 
     writer = SummaryWriter(log_dir=str(log_dir))
-    print(f"Start training, batch size: {data_cfg['batch_size']}, "
-          f"epochs: {opt_cfg['epochs']}")
+    log.info(f"Start training, batch size: {data_cfg['batch_size']}, "
+             f"epochs: {opt_cfg['epochs']}")
 
     dataloader = create_dataloader(cfg)
     net = net.to(device).train()
@@ -297,7 +299,7 @@ def train(diffusion: Diffusion,
 
     use_amp = bool(opt_cfg.get("amp", device.type == 'cuda'))
     scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda")
-    print(f"Using AMP: {use_amp}")
+    log.info(f"Using AMP: {use_amp}")
 
     epochs = opt_cfg["epochs"]
     warmup_epochs = opt_cfg.get("warmup_epochs", max(1, epochs // 10))
@@ -311,7 +313,6 @@ def train(diffusion: Diffusion,
     tic = time.time()
     for epoch in range(epochs):
         total_loss = 0.0
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")
         warmup_cosine(optimizer,
                       epoch,
                       epochs - 1,
@@ -319,38 +320,40 @@ def train(diffusion: Diffusion,
                       lr_max=lr_max,
                       warmup_epoch=warmup_epochs)
 
-        for lr_images, hr_images, _ in pbar:
-            lr_images = lr_images.to(device, non_blocking=True)
-            hr_images = hr_images.to(device, non_blocking=True)
-            batch_size = hr_images.size(0)
+        # 使用 Rich Progress 进度条
+        with log.progress_bar(dataloader, desc=f"Epoch {epoch + 1}/{epochs}") as pbar:
+            for lr_images, hr_images, _ in pbar:
+                lr_images = lr_images.to(device, non_blocking=True)
+                hr_images = hr_images.to(device, non_blocking=True)
+                batch_size = hr_images.size(0)
 
-            t = torch.randint(0,
-                              n_steps, (batch_size,),
-                              device=device,
-                              dtype=torch.long)
-            x_t = diffusion.q_sample(t, hr_images, lr_images)
+                t = torch.randint(0,
+                                  n_steps, (batch_size,),
+                                  device=device,
+                                  dtype=torch.long)
+                x_t = diffusion.q_sample(t, hr_images, lr_images)
 
-            with torch.amp.autocast(device_type=device.type,
-                                    dtype=torch.float16,
-                                    enabled=use_amp
-                                    and device.type == "cuda"):
-                pred = net(x_t, t, lr_images)
-                std_fwd = diffusion.get_std_fwd(t, xdim=hr_images.shape[1:])
-                label = (x_t - hr_images) / std_fwd
-                loss = loss_fn(pred, label)
+                with torch.amp.autocast(device_type=device.type,
+                                        dtype=torch.float16,
+                                        enabled=use_amp
+                                        and device.type == "cuda"):
+                    pred = net(x_t, t, lr_images)
+                    std_fwd = diffusion.get_std_fwd(t, xdim=hr_images.shape[1:])
+                    label = (x_t - hr_images) / std_fwd
+                    loss = loss_fn(pred, label)
 
-            optimizer.zero_grad(set_to_none=True)
-            if use_amp and device.type == "cuda":
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                if use_amp and device.type == "cuda":
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
-            total_loss += loss.item() * batch_size
-            ema_update(ema_net, net, decay=opt_cfg["ema_decay"])
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+                total_loss += loss.item() * batch_size
+                ema_update(ema_net, net, decay=opt_cfg["ema_decay"])
+                pbar.update_postfix(loss=f"{loss.item():.4f}")
 
         if epoch % preview_interval == 0:
             net_was_training = net.training
@@ -387,7 +390,7 @@ def train(diffusion: Diffusion,
         writer.add_scalar('train/loss', avg_loss, epoch + 1)
 
         toc = time.time()
-        print(
+        log.info(
             f"Epoch {epoch + 1}/{epochs} finished. "
             f"Average loss: {avg_loss:.6f}. "
             f"Elapsed: {(toc - tic):.2f}s")
@@ -426,7 +429,7 @@ def train(diffusion: Diffusion,
         safe_replace(tmp_ckpt, ckpt_path)
 
     writer.close()
-    print("Done training!")
+    log.info("Training completed!")
     return ema_net
 
 
@@ -448,15 +451,23 @@ def make_beta_schedule(n_timestep=1000, linear_start=1e-4, linear_end=2e-2):
     return betas.numpy()
 
 def main() -> None:
+    # 初始化 logger
+    log = Logger(rank=0, log_dir="runs/logs")
+    
+    log.info("=======================================================")
+    log.info("         Image-to-Image Schrodinger Bridge")
+    log.info("=======================================================")
+    
     cfg = load_config(DEFAULT_CONFIG_PATH)
     seed = cfg.get("seed", 42)
     if seed is not None:
         set_seed(seed)
+        log.info(f"Random seed: {seed}")
     else:
-        print("Seed disabled; results will vary between runs.")
+        log.warning("Seed disabled; results will vary between runs.")
 
     device = resolve_device(cfg.get("device"))
-    print(f"Using device: {device}")
+    log.info(f"Using device: {device}")
 
     net = build_model(cfg, device)
     maybe_load_checkpoint(net, cfg, device)
@@ -477,13 +488,20 @@ def main() -> None:
     ckpt_dir = Path(cfg["model"]["checkpoint_dir"])
     ensure_dir(ckpt_dir)
     ckpt_path = ckpt_dir / cfg["model"]["checkpoint_name"]
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    timestamp = time.strftime("%Y%m%d-%H%M%S") #时间戳获取
     log_cfg = cfg["logging"]
     log_root = Path(log_cfg["tensorboard_root"])
     ensure_dir(log_root)
     log_dir = log_root / f"{timestamp}-{log_cfg.get('experiment_name', 'sr-train')}"
     ensure_dir(log_dir)
-    train(diffusion, net, cfg, device, ckpt_path, log_dir, n_steps)
+    
+    train(diffusion, net, cfg, device, ckpt_path, log_dir, n_steps, log)
+    
+    # 训练结束后保存配置文件（记录实际完成的训练）
+    cfg_copy_path = log_dir / "train_config.json"
+    with cfg_copy_path.open("w", encoding="utf-8") as handle:
+        json.dump(cfg, handle, indent=4)
+    log.info(f"Configuration saved to {cfg_copy_path}")
 
 
 if __name__ == "__main__":
