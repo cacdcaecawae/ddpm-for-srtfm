@@ -389,13 +389,15 @@ def train(diffusion: Diffusion,
                              epoch + 1)
 
         avg_loss = total_loss / len(dataloader.dataset)
+        current_lr = optimizer.param_groups[0]['lr']
         writer.add_scalar('train/loss', avg_loss, epoch + 1)
+        writer.add_scalar('train/learning_rate', current_lr, epoch + 1)
 
         toc = time.time()
         log.info(
             f"Epoch {epoch + 1}/{epochs} finished. "
             f"Average loss: {avg_loss:.6f}. "
-            f"Elapsed: {(toc - tic):.2f}s")
+            f"LR: {current_lr:.2e}")
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -453,12 +455,20 @@ def make_beta_schedule(n_timestep=1000, linear_start=1e-4, linear_end=2e-2):
     return betas.numpy()
 
 def main() -> None:
+    # 可选择输入一段记录日志
+    user_log = input("请输入一段日志记录（或直接回车跳过）: ")
+    
     # 初始化 logger
     log = Logger(rank=0, log_dir="runs/logs")
     
     log.info("=======================================================")
     log.info("         Image-to-Image Schrodinger Bridge")
     log.info("=======================================================")
+    
+    # 如果有用户输入，写入日志开头
+    if user_log.strip():
+        log.info(f"User Note: {user_log.strip()}")
+        log.info("-------------------------------------------------------")
     
     cfg = load_config(DEFAULT_CONFIG_PATH)
     seed = cfg.get("seed", 42)
