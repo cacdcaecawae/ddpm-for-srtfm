@@ -118,9 +118,9 @@ class Logger(object):
         # 创建 Rich Progress
         progress = Progress(
             SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(complete_style="green", finished_style="bright_green"),
-            MofNCompleteColumn(),
+            TextColumn("[bold magenta]{task.description}"),
+            BarColumn(complete_style="red", finished_style="bright_red"),
+            TextColumn("[magenta]{task.completed}/{task.total}"),  # 自定义进度数字颜色
             TextColumn("•"),
             TimeElapsedColumn(),
             TextColumn("•"),
