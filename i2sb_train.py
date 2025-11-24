@@ -333,7 +333,7 @@ def train(diffusion: Diffusion,
                                   n_steps, (batch_size,),
                                   device=device,
                                   dtype=torch.long)
-                x_t = diffusion.q_sample(t, hr_images, lr_images)
+                x_t = diffusion.q_sample(t, hr_images, lr_images[:,0:1])
 
                 with torch.amp.autocast(device_type=device.type,
                                         dtype=torch.float16,
@@ -475,6 +475,13 @@ def main() -> None:
     maybe_load_checkpoint(net, cfg, device)
 
     n_steps = cfg["model"]["diffusion_steps"]
+    if cfg["data"].get("augment", False):
+        log.info("开启数据增强.")   
+    if cfg["data"].get("use_tfm_channels", False):
+        log.info("使用 3 通道作为低分辨率输入.")
+    else:
+        log.info("使用单通道作为低分辨率输入.")
+    log.info(f"Diffusion steps: {n_steps}")
 
     # 对称 beta 调度（I2SB 桥接）
     betas = make_beta_schedule(n_timestep=n_steps, linear_end=3e-4)

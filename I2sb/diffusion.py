@@ -110,7 +110,7 @@ class Diffusion():
         assert len(steps) >= 2, "steps 至少需要包含2个时间步"
         assert steps[0] == 0, "steps 必须从 0 开始"
         
-        xt = x1.detach().to(self.device)
+        xt = x1[:,0:1].detach().to(self.device)
         
         if return_trajectory:
             xs = []
