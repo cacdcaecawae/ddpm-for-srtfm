@@ -125,14 +125,16 @@ def to_jet(x: torch.Tensor,
     x_norm = (x - vmin) / (vmax - vmin)
     x_norm = x_norm.clamp(0, 1)
 
-    # 修复 matplotlib 弃用警告
+    # 修复 matplotlib 弃用警告 - 使用新 API
     try:
         # matplotlib >= 3.7
+        from matplotlib import colormaps
+        cmap = colormaps.get_cmap('jet')
+        lut_np = cmap(np.linspace(0, 1, bins))[:, :3]
+    except (ImportError, AttributeError):
+        # matplotlib < 3.7
         cmap = cm.get_cmap('jet')
         lut_np = cmap(np.linspace(0, 1, bins))[:, :3]
-    except AttributeError:
-        # matplotlib < 3.7
-        lut_np = cm.get_cmap('jet', bins)(np.linspace(0, 1, bins))[:, :3]
     
     lut = torch.from_numpy(lut_np).to(device=device, dtype=torch.float32)
 

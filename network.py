@@ -15,7 +15,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_seq_len, d_model)
         positions = torch.linspace(0, max_seq_len - 1, max_seq_len)
         dims = torch.linspace(0, d_model - 2, d_model // 2)
-        pos, two_i = torch.meshgrid(positions, dims)
+        pos, two_i = torch.meshgrid(positions, dims, indexing='ij')
         denominator = 10000**(two_i / d_model)
         pe_2i = torch.sin(pos / denominator)
         pe_2i_1 = torch.cos(pos / denominator)
