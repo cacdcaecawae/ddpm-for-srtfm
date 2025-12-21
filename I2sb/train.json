@@ -6,7 +6,7 @@
     "num_workers": 4,
     "image_size": 400,
     "channels": 1,
-    "h5_path": "./data/train.h5",
+    "h5_path": "./data/output_merge/train.h5",
     "h5_lr_key": "TFM",
     "h5_hr_key": "hr",
     "h5_lr_dataset": "intensity",
@@ -25,7 +25,7 @@
     "backbone": "dit_base",
     "diffusion_steps": 1000,
     "checkpoint_dir": "SR/weight_ckpt",
-    "checkpoint_name": "I2sb1124.pth"
+    "checkpoint_name": "I2sb1221.pth"
   },
   "optimization": {
     "epochs": 1000,

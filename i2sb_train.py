@@ -281,10 +281,16 @@ def train(diffusion: Diffusion,
     logging_cfg = cfg["logging"]
 
     writer = SummaryWriter(log_dir=str(log_dir))
-    log.info(f"Start training, batch size: {data_cfg['batch_size']}, "
-             f"epochs: {opt_cfg['epochs']}")
-
+    
     dataloader = create_dataloader(cfg)
+    total_samples = len(dataloader.dataset)
+    
+    # 获取实际图像尺寸
+    sample_lr, sample_hr, _ = next(iter(dataloader))
+    actual_image_size = sample_hr.shape[-1]
+    
+    log.info(f"Start training, batch size: {data_cfg['batch_size']}, epochs: {opt_cfg['epochs']}")
+    log.info(f"Total samples: {total_samples}, steps per epoch: {len(dataloader)}, image size: {actual_image_size}x{actual_image_size}, HR channels: {sample_hr.shape[1]}, LR channels: {sample_lr.shape[1]}")
     net = net.to(device).train()
     ema_net = deepcopy(net).eval().requires_grad_(False)
 
