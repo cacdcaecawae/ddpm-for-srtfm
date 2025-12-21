@@ -312,6 +312,9 @@ def train(diffusion: Diffusion,
     amp_dtype = torch.bfloat16 if amp_dtype_str == "bfloat16" else torch.float16
     scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda" and amp_dtype == torch.float16)
     log.info(f"Using AMP: {use_amp}, dtype: {amp_dtype_str if use_amp else 'float32'}")
+    clip_grad_norm = opt_cfg.get("clip_grad_norm")
+    if clip_grad_norm is not None:
+        log.info(f"Gradient clipping enabled: {clip_grad_norm}")
 
     epochs = opt_cfg["epochs"]
     warmup_epochs = opt_cfg.get("warmup_epochs", max(1, epochs // 10))
@@ -357,10 +360,17 @@ def train(diffusion: Diffusion,
                 optimizer.zero_grad(set_to_none=True)
                 if use_amp and device.type == "cuda":
                     scaler.scale(loss).backward()
+                    if clip_grad_norm is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(net.parameters(),
+                                                       clip_grad_norm)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
+                    if clip_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(net.parameters(),
+                                                       clip_grad_norm)
                     optimizer.step()
 
                 total_loss += loss.item() * batch_size

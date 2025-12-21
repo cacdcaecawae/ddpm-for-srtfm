@@ -457,9 +457,9 @@ unet_res_cfg = {
 
 dit_base_cfg = {
     'type': 'DiT',
-    'patch_size': 4,
+    'patch_size': 8,
     'embed_dim': 256,
-    'depth': 8,
+    'depth': 6,
     'num_heads': 4,
     'mlp_ratio': 4.0,
     'dropout': 0.0,
