@@ -279,6 +279,153 @@ class UNet(nn.Module):
         return self.conv_out(x)
 
 
+class AdaLayerNorm(nn.Module):
+
+    def __init__(self, normalized_shape: int, t_dim: int) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(normalized_shape)
+        self.mlp = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(t_dim, normalized_shape * 2),
+        )
+
+    def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
+        scale, shift = self.mlp(t_emb).unsqueeze(1).chunk(2, dim=-1)
+        return self.norm(x) * (1 + scale) + shift
+
+
+class DiTBlock(nn.Module):
+
+    def __init__(self,
+                 embed_dim: int,
+                 num_heads: int,
+                 mlp_ratio: float = 4.0,
+                 dropout: float = 0.0,
+                 attn_dropout: float = 0.0,
+                 t_dim: int = 256) -> None:
+        super().__init__()
+        self.adaln_attn = AdaLayerNorm(embed_dim, t_dim)
+        self.attn = nn.MultiheadAttention(embed_dim,
+                                          num_heads,
+                                          dropout=attn_dropout,
+                                          batch_first=True)
+        self.attn_drop = nn.Dropout(dropout)
+
+        self.adaln_mlp = AdaLayerNorm(embed_dim, t_dim)
+        mlp_hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim, embed_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
+        h = self.adaln_attn(x, t_emb)
+        attn_out, _ = self.attn(h, h, h, need_weights=False)
+        x = x + self.attn_drop(attn_out)
+        h = self.adaln_mlp(x, t_emb)
+        x = x + self.mlp(h)
+        return x
+
+
+class DiT(nn.Module):
+
+    def __init__(self,
+                 n_steps: int,
+                 in_channels: int = 1,
+                 lr_channels: Optional[int] = None,
+                 patch_size: int = 4,
+                 embed_dim: int = 256,
+                 depth: int = 8,
+                 num_heads: int = 4,
+                 mlp_ratio: float = 4.0,
+                 dropout: float = 0.0,
+                 attn_dropout: float = 0.0,
+                 pe_dim: int = 256) -> None:
+        super().__init__()
+        if lr_channels is None:
+            lr_channels = in_channels
+        if embed_dim % 4 != 0:
+            raise ValueError(
+                "embed_dim must be divisible by 4 for 2D sin-cos positional encoding.")
+
+        self.patch_size = patch_size
+        self.in_channels = in_channels
+        self.lr_channels = lr_channels
+        self.embed_dim = embed_dim
+
+        self.pe = PositionalEncoding(n_steps, pe_dim)
+        self.t_mlp = nn.Sequential(
+            nn.Linear(pe_dim, pe_dim * 4), nn.SiLU(),
+            nn.Linear(pe_dim * 4, embed_dim))
+
+        self.patch_embed = nn.Conv2d(in_channels + lr_channels,
+                                     embed_dim,
+                                     kernel_size=patch_size,
+                                     stride=patch_size)
+        self.pos_drop = nn.Dropout(dropout)
+        self.blocks = nn.ModuleList([
+            DiTBlock(embed_dim=embed_dim,
+                     num_heads=num_heads,
+                     mlp_ratio=mlp_ratio,
+                     dropout=dropout,
+                     attn_dropout=attn_dropout,
+                     t_dim=embed_dim) for _ in range(depth)
+        ])
+        self.final_norm = nn.LayerNorm(embed_dim)
+        self.unpatch = nn.ConvTranspose2d(embed_dim,
+                                          in_channels,
+                                          kernel_size=patch_size,
+                                          stride=patch_size)
+
+    def _build_2d_sincos_position_embedding(self, h: int, w: int,
+                                            device: torch.device,
+                                            dtype: torch.dtype) -> torch.Tensor:
+        grid_w = torch.arange(w, device=device, dtype=dtype)
+        grid_h = torch.arange(h, device=device, dtype=dtype)
+        grid = torch.meshgrid(grid_h, grid_w, indexing='ij')
+        pos_dim = self.embed_dim // 4
+        omega = torch.arange(pos_dim, device=device, dtype=dtype)
+        omega = 1.0 / (10000**(omega / pos_dim))
+
+        outs = []
+        for g in grid:
+            g_flat = g.reshape(-1)
+            outs.append(torch.sin(torch.outer(g_flat, omega)))
+            outs.append(torch.cos(torch.outer(g_flat, omega)))
+        pos_embed = torch.cat(outs, dim=1)
+        return pos_embed.unsqueeze(0)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor,
+                lr_image: torch.Tensor) -> torch.Tensor:
+        b, _, h, w = x.shape
+        x = torch.cat((x, lr_image), dim=1)
+        pad_h = (self.patch_size - h % self.patch_size) % self.patch_size
+        pad_w = (self.patch_size - w % self.patch_size) % self.patch_size
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+
+        x = self.patch_embed(x)
+        h_p, w_p = x.shape[2], x.shape[3]
+        x = x.flatten(2).transpose(1, 2)
+        pos_embed = self._build_2d_sincos_position_embedding(
+            h_p, w_p, x.device, x.dtype)
+        x = self.pos_drop(x + pos_embed)
+
+        t_emb = self.t_mlp(self.pe(t))
+        for block in self.blocks:
+            x = block(x, t_emb)
+        x = self.final_norm(x)
+
+        x = x.transpose(1, 2).reshape(b, self.embed_dim, h_p, w_p)
+        x = self.unpatch(x)
+        if pad_h or pad_w:
+            x = x[:, :, :h, :w]
+        return x
+
+
 convnet_small_cfg = {
     'type': 'ConvNet',
     'intermediate_channels': [10, 20],
@@ -308,6 +455,18 @@ unet_res_cfg = {
     'residual': True,
 }
 
+dit_base_cfg = {
+    'type': 'DiT',
+    'patch_size': 4,
+    'embed_dim': 256,
+    'depth': 8,
+    'num_heads': 4,
+    'mlp_ratio': 4.0,
+    'dropout': 0.0,
+    'attn_dropout': 0.0,
+    'pe_dim': 256,
+}
+
 
 def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: int = 101, lr_channels: Optional[int] = None) -> nn.Module:
     cfg = config.copy()
@@ -317,13 +476,15 @@ def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: 
     cfg['in_channels'] = in_channels
     if network_type == 'UNet':
         cfg['image_size'] = image_size
-        if lr_channels is not None:
-            cfg['lr_channels'] = lr_channels
+    if network_type in ('UNet', 'DiT') and lr_channels is not None:
+        cfg['lr_channels'] = lr_channels
     
     if network_type == 'ConvNet':
         network_cls = ConvNet
     elif network_type == 'UNet':
         network_cls = UNet
+    elif network_type == 'DiT':
+        network_cls = DiT
     else:
         raise KeyError(f"Unsupported network type '{network_type}'.")
     return network_cls(n_steps, **cfg)

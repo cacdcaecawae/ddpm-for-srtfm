@@ -19,7 +19,8 @@ from dataset import get_h5_dataloader
 from I2sb.diffusion import Diffusion
 from logger import Logger
 from network import (build_network, convnet_big_cfg, convnet_medium_cfg,
-                     convnet_small_cfg, unet_1_cfg, unet_res_cfg)
+                     convnet_small_cfg, dit_base_cfg, unet_1_cfg,
+                     unet_res_cfg)
 
 
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
@@ -28,6 +29,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "convnet_big": convnet_big_cfg,
     "unet": unet_1_cfg,
     "unet_res": unet_res_cfg,
+    "dit_base": dit_base_cfg,
 }
 
 DEFAULT_CONFIG_PATH = Path("I2sb/train.json")
