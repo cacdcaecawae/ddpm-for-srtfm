@@ -308,8 +308,10 @@ def train(diffusion: Diffusion,
     ema_model_best_state_dict = None
 
     use_amp = bool(opt_cfg.get("amp", device.type == 'cuda'))
-    scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda")
-    log.info(f"Using AMP: {use_amp}")
+    amp_dtype_str = opt_cfg.get("amp_dtype", "float16")
+    amp_dtype = torch.bfloat16 if amp_dtype_str == "bfloat16" else torch.float16
+    scaler = torch.amp.GradScaler(enabled=use_amp and device.type == "cuda" and amp_dtype == torch.float16)
+    log.info(f"Using AMP: {use_amp}, dtype: {amp_dtype_str if use_amp else 'float32'}")
 
     epochs = opt_cfg["epochs"]
     warmup_epochs = opt_cfg.get("warmup_epochs", max(1, epochs // 10))
@@ -344,7 +346,7 @@ def train(diffusion: Diffusion,
                 x_t = diffusion.q_sample(t, hr_images, lr_images[:,0:1])
 
                 with torch.amp.autocast(device_type=device.type,
-                                        dtype=torch.float16,
+                                        dtype=amp_dtype,
                                         enabled=use_amp
                                         and device.type == "cuda"):
                     pred = net(x_t, t, lr_images)

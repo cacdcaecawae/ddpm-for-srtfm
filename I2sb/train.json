@@ -39,7 +39,8 @@
     "warmup_epochs": 100,
     "lr_min": 1e-06,
     "lr_max": 0.0005,
-    "amp": true
+    "amp": true,
+    "amp_dtype": "bfloat16"
   },
   "logging": {
     "tensorboard_root": "runs",
