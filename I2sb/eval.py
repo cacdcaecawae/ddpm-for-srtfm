@@ -117,10 +117,33 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
     return model
 
 
+def make_beta_schedule(n_timestep: int = 1000,
+                       linear_start: float = 1e-4,
+                       linear_end: float = 2e-2) -> np.ndarray:
+    """创建 beta schedule（与训练代码一致）"""
+    betas = (
+        torch.linspace(linear_start ** 0.5, linear_end ** 0.5,
+                      n_timestep, dtype=torch.float64) ** 2
+    )
+    return betas.numpy()
+
+
 def create_diffusion(cfg: Dict[str, Any], device: torch.device) -> Diffusion:
-    """创建 I2SB 扩散对象"""
+    """创建 I2SB 扩散对象（与训练代码保持一致）"""
     n_steps = cfg["model"]["diffusion_steps"]
-    betas = np.linspace(0.0001, 0.02, n_steps)
+    
+    # 使用与训练相同的 beta schedule
+    betas = make_beta_schedule(n_timestep=n_steps, linear_end=3e-4)
+    
+    # 对称镜像处理（I2SB 桥接）
+    half = n_steps // 2
+    if n_steps % 2 == 1:
+        # 奇数步数：中间点重复一次
+        betas = np.concatenate([betas[:half], [betas[half]], np.flip(betas[:half])])
+    else:
+        # 偶数步数：直接镜像
+        betas = np.concatenate([betas[:half], np.flip(betas[:half])])
+    
     diffusion = Diffusion(betas, device)
     return diffusion
 

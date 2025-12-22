@@ -23,7 +23,7 @@
     "module": "network",
     "backbone": "dit_base",
     "diffusion_steps": 1000,
-    "checkpoint_path": "./SR/autodl_weight/I2sb_sim_1218.pth"
+    "checkpoint_path": "./SR/autodl_weight/I2sb1222.pth"
   },
   "vae": {
     "enabled": false,
@@ -38,7 +38,7 @@
     "seed": 1234
   },
   "output": {
-    "root": "SR/eval_results_i2sb_1218",
+    "root": "SR/eval_results_i2sb_1222",
     "save_images": true
   }
 }
