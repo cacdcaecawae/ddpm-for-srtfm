@@ -98,6 +98,9 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
     
     net_cfg = MODEL_CONFIGS[backbone_key].copy()
     n_steps = model_cfg["diffusion_steps"]
+    t0 = float(model_cfg.get("t0", 1e-4))
+    T = float(model_cfg.get("T", 1.0))
+    noise_levels = torch.linspace(t0, T, n_steps, device=device, dtype=torch.float32) * n_steps
     
     in_channels = data_cfg["channels"]
     image_size = data_cfg["image_size"]
@@ -106,7 +109,12 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
     if data_cfg.get("use_tfm_channels", False):
         lr_channels = 3
     
-    model = build_network(net_cfg, n_steps, in_channels, image_size, lr_channels).to(device)
+    model = build_network(net_cfg,
+                          n_steps,
+                          in_channels,
+                          image_size,
+                          lr_channels,
+                          noise_levels=noise_levels).to(device)
     
     checkpoint = torch.load(model_cfg["checkpoint_path"], map_location=device)
     state_dict = checkpoint.get("ema_model_state_dict",
