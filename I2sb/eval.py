@@ -161,6 +161,34 @@ def denormalize(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.clamp(-1, 1).add(1).div(2)
 
 
+def compute_iou(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> float:
+    """
+    计算IoU (Intersection over Union)
+    
+    Args:
+        pred: 预测张量 [C, H, W] 或 [B, C, H, W]，值域 [0, 1]
+        target: 目标张量，形状与pred相同
+        threshold: 二值化阈值
+    
+    Returns:
+        IoU值
+    """
+    # 二值化
+    pred_binary = (pred > threshold).float()
+    target_binary = (target > threshold).float()
+    
+    # 计算交集和并集
+    intersection = (pred_binary * target_binary).sum()
+    union = pred_binary.sum() + target_binary.sum() - intersection
+    
+    # 避免除零
+    if union == 0:
+        return 1.0 if intersection == 0 else 0.0
+    
+    iou = intersection / union
+    return iou.item()
+
+
 def tensor_to_image(tensor: torch.Tensor,
                     apply_jet: bool = False) -> Image.Image:
     """将张量转换为 PIL Image"""
@@ -213,6 +241,7 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
     
     psnr_scores = []
     ssim_scores = []
+    iou_scores = []
     per_image_results = []
     
     with torch.inference_mode():
@@ -258,13 +287,16 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                 
                 psnr = peak_signal_noise_ratio(pred, target)
                 ssim = structural_similarity_index_measure(pred, target)
+                iou = compute_iou(pred, target, threshold=threshold)
                 
                 psnr_scores.append(psnr.item())
                 ssim_scores.append(ssim.item())
+                iou_scores.append(iou)
                 per_image_results.append({
                     "filename": name,
                     "psnr": psnr.item(),
                     "ssim": ssim.item(),
+                    "iou": iou,
                 })
                 
                 # 保存图像
@@ -276,11 +308,22 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
                     tensor_to_image(sr_for_image[idx],
                                     apply_jet=use_jet).save(images_dir / image_filename)
     
-    # 计算平均指标
+    # 计算统计指标（平均、最大、最小）
     avg_psnr = float(np.mean(psnr_scores)) if psnr_scores else 0.0
+    max_psnr = float(np.max(psnr_scores)) if psnr_scores else 0.0
+    min_psnr = float(np.min(psnr_scores)) if psnr_scores else 0.0
+    
     avg_ssim = float(np.mean(ssim_scores)) if ssim_scores else 0.0
-    print(f"平均 PSNR: {avg_psnr:.4f}")
-    print(f"平均 SSIM: {avg_ssim:.4f}")
+    max_ssim = float(np.max(ssim_scores)) if ssim_scores else 0.0
+    min_ssim = float(np.min(ssim_scores)) if ssim_scores else 0.0
+    
+    avg_iou = float(np.mean(iou_scores)) if iou_scores else 0.0
+    max_iou = float(np.max(iou_scores)) if iou_scores else 0.0
+    min_iou = float(np.min(iou_scores)) if iou_scores else 0.0
+    
+    print(f"PSNR - 平均: {avg_psnr:.4f}, 最大: {max_psnr:.4f}, 最小: {min_psnr:.4f}")
+    print(f"SSIM - 平均: {avg_ssim:.4f}, 最大: {max_ssim:.4f}, 最小: {min_ssim:.4f}")
+    print(f"IoU  - 平均: {avg_iou:.4f}, 最大: {max_iou:.4f}, 最小: {min_iou:.4f}")
     
     # 保存结果
     results_txt = output_root / "results.txt"
@@ -292,12 +335,14 @@ def evaluate(cfg: Dict[str, Any], device: torch.device) -> None:
         handle.write(f"Dataset: {data_source}\n")
         handle.write(f"Sampling Steps: {num_steps}\n")
         handle.write(f"OT-ODE: {ot_ode}\n")
-        handle.write(f"Average PSNR: {avg_psnr:.4f}\n")
-        handle.write(f"Average SSIM: {avg_ssim:.4f}\n")
+        handle.write("\n")
+        handle.write(f"PSNR - Average: {avg_psnr:.4f}, Max: {max_psnr:.4f}, Min: {min_psnr:.4f}\n")
+        handle.write(f"SSIM - Average: {avg_ssim:.4f}, Max: {max_ssim:.4f}, Min: {min_ssim:.4f}\n")
+        handle.write(f"IoU  - Average: {avg_iou:.4f}, Max: {max_iou:.4f}, Min: {min_iou:.4f}\n")
     
     results_csv = output_root / "results_per_image.csv"
     with results_csv.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=["filename", "psnr", "ssim"])
+        writer = csv.DictWriter(csv_file, fieldnames=["filename", "psnr", "ssim", "iou"])
         writer.writeheader()
         writer.writerows(per_image_results)
     
