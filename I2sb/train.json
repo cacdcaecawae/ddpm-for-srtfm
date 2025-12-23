@@ -24,6 +24,8 @@
     "module": "network",
     "backbone": "dit_base",
     "diffusion_steps": 1000,
+    "t0": 0.0001,
+    "T": 1.0,
     "checkpoint_dir": "SR/weight_ckpt",
     "checkpoint_name": "I2sb1221.pth"
   },

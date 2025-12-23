@@ -179,7 +179,7 @@ def save_grid_image(tensor: torch.Tensor, output_path: Path) -> None:
     image.save(output_path)
 
 
-def build_model(cfg: Dict[str, Any], device: torch.device) -> nn.Module:
+def build_model(cfg: Dict[str, Any], device: torch.device, noise_levels: Optional[torch.Tensor] = None) -> nn.Module:
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
     backbone_key = model_cfg["backbone"]
@@ -198,7 +198,12 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> nn.Module:
     if data_cfg.get("use_tfm_channels", False):
         lr_channels = 3  # TFM 模式: I, X, Y 三通道
     
-    net = build_network(net_cfg, n_steps, in_channels, image_size, lr_channels).to(device)
+    net = build_network(net_cfg,
+                        n_steps,
+                        in_channels,
+                        image_size,
+                        lr_channels,
+                        noise_levels=noise_levels).to(device)
     return net
 
 
@@ -501,9 +506,6 @@ def main() -> None:
     device = resolve_device(cfg.get("device"))
     log.info(f"Using device: {device}")
 
-    net = build_model(cfg, device)
-    maybe_load_checkpoint(net, cfg, device)
-
     n_steps = cfg["model"]["diffusion_steps"]
     if cfg["data"].get("augment", False):
         log.info("开启数据增强.")   
@@ -523,6 +525,13 @@ def main() -> None:
         # 偶数步数：直接镜像
         betas = np.concatenate([betas[:half], np.flip(betas[:half])])
     diffusion = Diffusion(betas, device)
+
+    t0 = float(cfg["model"].get("t0", 1e-4))
+    T = float(cfg["model"].get("T", 1.0))
+    noise_levels = torch.linspace(t0, T, n_steps, device=device, dtype=torch.float32) * n_steps
+    net = build_model(cfg, device, noise_levels=noise_levels)
+    maybe_load_checkpoint(net, cfg, device)
+    log.info(f"Noise levels mapped to network time inputs: [{noise_levels.min().item():.4g}, {noise_levels.max().item():.4g}], steps={n_steps}")
 
     ckpt_dir = Path(cfg["model"]["checkpoint_dir"])
     ensure_dir(ckpt_dir)

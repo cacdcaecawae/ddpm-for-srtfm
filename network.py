@@ -1,33 +1,49 @@
 from __future__ import annotations
 from typing import Optional
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
+def map_timestep(t: torch.Tensor,
+                 noise_levels: Optional[torch.Tensor]) -> torch.Tensor:
+    """
+    将离散时间步索引映射为连续 noise level（如果提供），否则保持原样。
+    返回浮点张量以支持正弦时间编码。
+    """
+    if noise_levels is None:
+        return t.float()
+    if t.dtype.is_floating_point:
+        return t
+    return noise_levels.to(t.device)[t]
+
+
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, max_seq_len: int, d_model: int) -> None:
+    def __init__(self, max_seq_len: int, d_model: int, max_period: float = 10000.0) -> None:
         super().__init__()
         if d_model % 2 != 0:
             raise ValueError("d_model must be even for sinusoidal encoding.")
-
-        pe = torch.zeros(max_seq_len, d_model)
-        positions = torch.linspace(0, max_seq_len - 1, max_seq_len)
-        dims = torch.linspace(0, d_model - 2, d_model // 2)
-        pos, two_i = torch.meshgrid(positions, dims, indexing='ij')
-        denominator = 10000**(two_i / d_model)
-        pe_2i = torch.sin(pos / denominator)
-        pe_2i_1 = torch.cos(pos / denominator)
-        pe = torch.stack((pe_2i, pe_2i_1), dim=2).reshape(max_seq_len, d_model)
-
-        self.embedding = nn.Embedding(max_seq_len, d_model)
-        with torch.no_grad():
-            self.embedding.weight[:] = pe
-        self.embedding.weight.requires_grad = False
+        self.dim = d_model
+        self.half = d_model // 2
+        self.max_period = float(max_period)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        return self.embedding(t)
+        """
+        连续/离散时间步的正弦位置编码 (支持浮点时间)。
+        """
+        device = t.device
+        freqs = torch.exp(
+            -math.log(self.max_period)
+            * torch.arange(start=0, end=self.half, dtype=torch.float32, device=device)
+            / self.half
+        )
+        args = t.float().unsqueeze(-1) * freqs.unsqueeze(0)
+        emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if self.dim % 2:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+        return emb
 
 
 class ResidualBlock(nn.Module):
@@ -64,11 +80,15 @@ class ConvNet(nn.Module):
                  in_channels: int = 1,
                  intermediate_channels=None,
                  pe_dim: int = 10,
-                 insert_t_to_all_layers: bool = False) -> None:
+                 insert_t_to_all_layers: bool = False,
+                 noise_levels: Optional[torch.Tensor] = None) -> None:
         super().__init__()
         if intermediate_channels is None:
             intermediate_channels = [10, 20, 40]
         self.pe = PositionalEncoding(n_steps, pe_dim)
+        if noise_levels is not None:
+            noise_levels = noise_levels.float()
+        self.register_buffer("noise_levels", noise_levels, persistent=False)
 
         self.pe_linears = nn.ModuleList()
         if not insert_t_to_all_layers:
@@ -87,6 +107,7 @@ class ConvNet(nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         batch_size = t.shape[0]
+        t = map_timestep(t, self.noise_levels)
         t = self.pe(t)
         for block, linear in zip(self.residual_blocks, self.pe_linears):
             if linear is not None:
@@ -169,7 +190,8 @@ class UNet(nn.Module):
                  lr_channels: Optional[int] = None,
                  channels=None,
                  pe_dim: int = 128,
-                 residual: bool = False) -> None:
+                 residual: bool = False,
+                 noise_levels: Optional[torch.Tensor] = None) -> None:
         super().__init__()
         if channels is None:
             channels = [10, 20, 40, 80]
@@ -181,6 +203,9 @@ class UNet(nn.Module):
         
         self.in_channels = in_channels
         self.lr_channels = lr_channels
+        if noise_levels is not None:
+            noise_levels = noise_levels.float()
+        self.register_buffer("noise_levels", noise_levels, persistent=False)
 
         self.pe = PositionalEncoding(n_steps, pe_dim)
         self.t_mlp = nn.Sequential(
@@ -258,6 +283,7 @@ class UNet(nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor,
                 lr_image: torch.Tensor) -> torch.Tensor:
+        t = map_timestep(t, self.noise_levels)
         x = torch.cat((x, lr_image), dim=1)
         t_emb = self.pe(t)
         encoder_outs = []
@@ -343,7 +369,8 @@ class DiT(nn.Module):
                  mlp_ratio: float = 4.0,
                  dropout: float = 0.0,
                  attn_dropout: float = 0.0,
-                 pe_dim: int = 256) -> None:
+                 pe_dim: int = 256,
+                 noise_levels: Optional[torch.Tensor] = None) -> None:
         super().__init__()
         if lr_channels is None:
             lr_channels = in_channels
@@ -355,6 +382,9 @@ class DiT(nn.Module):
         self.in_channels = in_channels
         self.lr_channels = lr_channels
         self.embed_dim = embed_dim
+        if noise_levels is not None:
+            noise_levels = noise_levels.float()
+        self.register_buffer("noise_levels", noise_levels, persistent=False)
 
         self.pe = PositionalEncoding(n_steps, pe_dim)
         self.t_mlp = nn.Sequential(
@@ -401,6 +431,7 @@ class DiT(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor,
                 lr_image: torch.Tensor) -> torch.Tensor:
         b, _, h, w = x.shape
+        t = map_timestep(t, self.noise_levels)
         x = torch.cat((x, lr_image), dim=1)
         pad_h = (self.patch_size - h % self.patch_size) % self.patch_size
         pad_w = (self.patch_size - w % self.patch_size) % self.patch_size
@@ -468,7 +499,7 @@ dit_base_cfg = {
 }
 
 
-def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: int = 101, lr_channels: Optional[int] = None) -> nn.Module:
+def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: int = 101, lr_channels: Optional[int] = None, noise_levels: Optional[torch.Tensor] = None) -> nn.Module:
     cfg = config.copy()
     network_type = cfg.pop('type')
     
@@ -478,6 +509,8 @@ def build_network(config: dict, n_steps: int, in_channels: int = 1, image_size: 
         cfg['image_size'] = image_size
     if network_type in ('UNet', 'DiT') and lr_channels is not None:
         cfg['lr_channels'] = lr_channels
+    if noise_levels is not None:
+        cfg['noise_levels'] = noise_levels
     
     if network_type == 'ConvNet':
         network_cls = ConvNet
