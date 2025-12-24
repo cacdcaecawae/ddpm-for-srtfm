@@ -405,10 +405,13 @@ class DiT(nn.Module):
                      t_dim=embed_dim) for _ in range(depth)
         ])
         self.final_norm = nn.LayerNorm(embed_dim)
-        self.unpatch = nn.ConvTranspose2d(embed_dim,
-                                          in_channels,
-                                          kernel_size=patch_size,
-                                          stride=patch_size)
+        self.unpatch = nn.Sequential(
+            nn.Conv2d(embed_dim, in_channels * (patch_size ** 2), 1),
+            nn.PixelShuffle(patch_size),
+        )
+        self.refine = nn.Conv2d(in_channels, in_channels, 3, 1, 1)
+        nn.init.zeros_(self.refine.weight)
+        nn.init.zeros_(self.refine.bias)
 
     def _build_2d_sincos_position_embedding(self, h: int, w: int,
                                             device: torch.device,
@@ -454,6 +457,7 @@ class DiT(nn.Module):
         x = self.unpatch(x)
         if pad_h or pad_w:
             x = x[:, :, :h, :w]
+        x = x + self.refine(x)
         return x
 
 
